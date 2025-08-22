@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""
-Integration tests for /version and the Version tab in the Admin UI.
-
+"""Location: ./tests/unit/mcpgateway/test_ui_version.py
 Copyright 2025
 SPDX-License-Identifier: Apache-2.0
+Authors: Mihai Criveti
+
+Integration tests for /version and the Version tab in the Admin UI.
 Author: Mihai Criveti
 """
 
@@ -12,7 +13,11 @@ from __future__ import annotations
 
 # Standard
 import base64
+import os
 from typing import Dict
+
+# Set environment before imports
+os.environ["MCPGATEWAY_A2A_ENABLED"] = "false"  # Disable A2A for UI tests
 
 # Third-Party
 import pytest
