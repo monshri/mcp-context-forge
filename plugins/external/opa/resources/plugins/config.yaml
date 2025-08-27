@@ -8,6 +8,16 @@ plugins:
     tags: ["plugin"]
     mode: "enforce"  # enforce | permissive | disabled
     priority: 150
+    applied_to: 
+      - global_context: 
+        - policy_context.process_commands
+        - policy_context.os_details # if it is the root key
+      - tools:
+        - name: "git-status"
+        - fields: 
+          - repo_path
+        
+
     conditions:
       # Apply to specific tools/servers
       - server_ids: []  # Apply to all servers
@@ -16,6 +26,7 @@ plugins:
       # Plugin config dict passed to the plugin constructor
       policy: "all path requests must have IBM"
       server_url: "http://127.0.0.1:8181/v1/data/example"
+
       
 
 # Plugin directories to scan

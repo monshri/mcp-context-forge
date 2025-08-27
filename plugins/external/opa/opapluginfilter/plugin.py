@@ -69,6 +69,14 @@ class OPAPluginFilter(Plugin):
         else:
             logger.debug(f"OPA error: {rsp}")
 
+    def _apply_policy_map(self, context: dict, opa_server_url: str) -> dict:
+        policy_endpoint_map = {}
+        for k, v in context.items():
+            policy_url = opa_server_url + "/allow_" + k
+            policy_endpoint_map[k] = policy_url
+        return policy_endpoint_map
+
+
     async def prompt_pre_fetch(self, payload: PromptPrehookPayload, context: PluginContext) -> PromptPrehookResult:
         """The plugin hook run before a prompt is retrieved and rendered.
 

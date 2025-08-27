@@ -5,10 +5,11 @@ from typing import Optional, Dict, Any
 class BaseOPAInputKeys(BaseModel):
     kind : str 
     user : str 
-    tool : Dict[str, Any]
     request_ip : str 
     headers : Dict[str, str]
     response : Dict[str, str]
+    payload: Dict[str, Any]
+    context: dict[str, Any]
 
 
 class OPAInput(BaseModel):
