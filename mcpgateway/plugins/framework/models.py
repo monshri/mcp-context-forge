@@ -84,7 +84,6 @@ class PluginMode(str, Enum):
     DISABLED = "disabled"
 
 
-
 class BaseTemplate(BaseModel):
     """Base Template.The ToolTemplate, PromptTemplate and ResourceTemplate could be extended using this
 
@@ -105,6 +104,7 @@ class BaseTemplate(BaseModel):
 
     context: Optional[list[str]] = None
     extensions: Optional[dict[str, Any]] = None
+
 
 class ToolTemplate(BaseTemplate):
     """Tool Template.
@@ -132,7 +132,7 @@ class ToolTemplate(BaseTemplate):
     result: bool = False
 
 
-class PromptTemplate(BaseTemplate):
+class PromptTemplate(BaseModel):
     """Prompt Template.
 
     Attributes:
@@ -156,7 +156,7 @@ class PromptTemplate(BaseTemplate):
     result: bool = False
 
 
-class ResourceTemplate(BaseTemplate):
+class ResourceTemplate(BaseModel):
     """Resource Template.
 
     Attributes:
