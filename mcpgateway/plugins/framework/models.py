@@ -127,7 +127,7 @@ class ToolTemplate(BaseTemplate):
         True
     """
 
-    tool_name: str
+    name: str
     fields: Optional[list[str]] = None
     result: bool = False
 
@@ -237,6 +237,8 @@ class AppliedTo(BaseModel):
         tools (Optional[list[ToolTemplate]]): tools and fields to be applied.
         prompts (Optional[list[PromptTemplate]]): prompts and fields to be applied.
         resources (Optional[list[ResourceTemplate]]): resources and fields to be applied.
+        global_context (Optional[list[str]]): keys in the context to be applied on globally
+        local_context(Optional[list[str]]): keys in the context to be applied on locally
     """
 
     tools: Optional[list[ToolTemplate]] = None
