@@ -1,34 +1,66 @@
+# -*- coding: utf-8 -*-
+"""A schema file for OPA plugin.
+
+Copyright 2025
+SPDX-License-Identifier: Apache-2.0
+Authors: Shriti Priya
+
+This module defines schema for OPA plugin.
+"""
+
+# Standard
+from typing import Optional, Any
+
+# Third-Party
 from pydantic import BaseModel
-from typing import Optional
-from typing import Optional, Dict, Any
 
 class BaseOPAInputKeys(BaseModel):
-    kind : str 
-    user : str 
-    tool : Dict[str, Any]
-    request_ip : str 
-    headers : Dict[str, str]
-    response : Dict[str, str]
+    """BaseOPAInputKeys
+
+    Attributes:
+        kind (Optional[str]) : specifying if it is a tool/call, or prompt, or resource request.
+        user (Optional[str]): specifies user information like admin etc.
+        request_ip (Optional[str]): specifies the IP of the request.
+        headers (Optional[dict[str, str]]): specifies the headers for the request.
+        response (Optional[dict[str, str]]) : specifies the response for the request.
+        payload (dict[str, Any]) : required payload for the request.
+        context (Optional[dict[str, Any]]) : context provided for policy evaluation.
+
+    Examples:
+        >>> opa_input = BaseOPAInputKeys(payload={"input" : {"repo_path" : "/path/file"}}, context = {"opa_policy_context" : {"context1" : "value1"}})
+        >>> opa_input.payload
+        '{"input" : {"repo_path" : "/path/file"}'
+        >>> opa_input.context
+        '{"opa_policy_context" : {"context1" : "value1"}}'
+
+    """
+    kind : Optional[str] = None
+    user : Optional[str] = None
+    request_ip : Optional[str] = None
+    headers : Optional[dict[str, str]] = None
+    response : Optional[dict[str, str]] = None
+    payload: dict[str, Any]
+    context: Optional[dict[str, Any]] = None
 
 
 class OPAInput(BaseModel):
-    input : BaseOPAInputKeys 
+    """OPAInput
 
+    Attributes:
+        input (BaseOPAInputKeys) : specifies the input to be passed to opa server for policy evaluation
 
-class OPAResult(BaseModel):
-    allow : bool = True
-    patch : Optional[Dict[str, Any]] = None
-    reason: Optional[str] = None
+    Examples:
+        >>> opa_input = OPAInput(input=BaseOPAInputKeys(payload={"input" : {"repo_path" : "/path/file"}}, context = {"opa_policy_context" : {"context1" : "value1"}}))
+        >>> opa_input.input.payload
+        '{"input" : {"repo_path" : "/path/file"}'
+        >>> opa_input.input.context
+        '{"opa_policy_context" : {"context1" : "value1"}}'
+
+    """
+    input : BaseOPAInputKeys
 
 class OPAConfig(BaseModel):
-    """Configuration for the PII Filter plugin."""
+    """Configuration for the OPA plugin."""
 
-    # Enable/disable detection for specific PII types
-    policy: str = "None"
-    server_url: str = "None"
-
-
-POLICY_BUNDLE_PATH = None
-POLICY_BUNDLE_URL = None
-POLICY_POLL_SEC = None
-POLICY_ENABLED= None
+    # Base url on which opa server is running
+    opa_base_url: str = "None"
