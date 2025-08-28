@@ -330,7 +330,7 @@ class PluginConfig(BaseModel):
     mode: PluginMode = PluginMode.ENFORCE
     priority: Optional[int] = None  # Lower = higher priority
     conditions: Optional[list[PluginCondition]] = None  # When to apply
-    applied_to: Optional[list[AppliedTo]] = None  # Fields to apply to.
+    applied_to: Optional[AppliedTo] = None  # Fields to apply to.
     config: Optional[dict[str, Any]] = None
     mcp: Optional[MCPConfig] = None
 
