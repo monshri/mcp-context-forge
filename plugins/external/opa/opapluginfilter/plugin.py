@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """An OPA plugin that enforces rego policies on requests and allows/denies requests as per policies.
 
 Copyright 2025
@@ -52,9 +53,24 @@ class OPAPluginFilter(Plugin):
         """
         super().__init__(config)
         self.opa_config = OPAConfig.model_validate(self._config.config)
+        self.opa_context_key = "opa_policy_context"
 
-    def _evaluate_opa_policy(self, url: str, input_dict: OPAInput) -> tuple[bool,Any]:
-        payload = input_dict.model_dump()
+
+    def _evaluate_opa_policy(self, url: str, input: OPAInput) -> tuple[bool,Any]:
+        """Function to evaluate OPA policy. Makes a request to opa server with url and input.
+
+        Args:
+            url: The url to call opa server
+            input: Contains the payload of input to be sent to opa server for policy evaluation.
+
+        Returns:
+            True, json_response if the opa policy is allowed else false. The json response is the actual response returned by OPA server.
+            If OPA server encountered any error, the return would be True (to gracefully exit) and None would be the json_response, marking
+            an issue with the OPA server running.
+
+        """
+
+        payload = input.model_dump()
         logger.info(f"OPA url {url}, OPA payload {payload}")
         rsp = requests.post(url, json=payload)
         logger.info(f"OPA connection response '{rsp}'")
@@ -68,6 +84,7 @@ class OPAPluginFilter(Plugin):
                 logger.debug(f"OPA sent a none response {json_response}")
         else:
             logger.debug(f"OPA error: {rsp}")
+        return True, None
 
     async def prompt_pre_fetch(self, payload: PromptPrehookPayload, context: PluginContext) -> PromptPrehookResult:
         """The plugin hook run before a prompt is retrieved and rendered.
@@ -105,22 +122,32 @@ class OPAPluginFilter(Plugin):
             The result of the plugin's analysis, including whether the tool can proceed.
         """
 
-        logger.debug(f"Processing tool pre-invoke for tool '{payload.name}' with {len(payload.args) if payload.args else 0} arguments")
-        
+        logger.info(f"Processing tool pre-invoke for tool '{payload.name}' with {len(payload.args) if payload.args else 0} arguments")
+        logger.info(f"Processing tool context {context}")
+
         if not payload.args:
             return ToolPreInvokeResult()
 
-        opa_input = BaseOPAInputKeys(kind="tools/call", user = "none", tool = {"name" : payload.name, "args" : payload.args}, request_ip = "none", headers = {}, response = {})
-        opa_server_url = self.opa_config.server_url
-        policy_url = opa_server_url + "/allow_pre_tool"
-        decision, decision_context = self._evaluate_opa_policy(policy_url,input_dict=OPAInput(input=opa_input))
-        if not decision:
-            violation = PluginViolation(
-                reason="tool invocation not allowed",
-                description="OPA policy failed on tool preinvocation",
-                code="deny",
-                details=decision_context,)
-            return ToolPreInvokeResult(modified_payload=payload, violation=violation, continue_processing=False)
+
+        # Get the tool for which policy needs to be applied
+        policy_apply_config = self._config.applied_to
+        if policy_apply_config and policy_apply_config.tools:
+            for tool in policy_apply_config.tools:
+                tool_name = tool.name
+                if payload.name == tool_name:
+                    tool_context = [item.rsplit('.', 1)[-1] for item in tool.context]  if tool.context else None
+                    policy_context = {k : context.global_context.state[self.opa_context_key][k] for k in tool_context}
+                    tool_policy = tool.extensions.get("policy",None) if tool.extensions else None
+                    opa_input = BaseOPAInputKeys(kind="tools/call", user = "none", payload=payload.model_dump(), context=policy_context, request_ip = "none", headers = {}, response = {})
+                    opa_server_url = self.opa_config.opa_base_url +  tool_policy + "/allow"
+                    decision, decision_context = self._evaluate_opa_policy(opa_server_url,input_dict=OPAInput(input=opa_input))
+                    if not decision:
+                        violation = PluginViolation(
+                            reason="tool invocation not allowed",
+                            description="OPA policy failed on tool preinvocation",
+                            code="deny",
+                            details=decision_context,)
+                        return ToolPreInvokeResult(modified_payload=payload, violation=violation, continue_processing=False)
         return ToolPreInvokeResult(continue_processing=True)
 
     async def tool_post_invoke(self, payload: ToolPostInvokePayload, context: PluginContext) -> ToolPostInvokeResult:
@@ -134,19 +161,4 @@ class OPAPluginFilter(Plugin):
         Returns:
             The result of the plugin's analysis, including whether the tool result should proceed.
         """
-        logger.info(f"OPA tool post request {payload} , {context}")
-        result = payload.result
-        opa_server_url = self.opa_config.server_url
-        policy_url = opa_server_url + "/allow_post_tool"
-        for content in result.content:
-            opa_input = BaseOPAInputKeys(kind="tools/call", user = "none", tool = {"name" : payload.name, "args" : content}, request_ip = "none", headers = {}, response = {})
-            decision, decision_context = self._evaluate_opa_policy(policy_url,input_dict=OPAInput(input=opa_input))
-            if not decision:
-                violation = PluginViolation(
-                    reason="tool invocation not allowed",
-                    description="OPA policy failed on tool postinvocation",
-                    code="deny",
-                    details=decision_context,)
-                return ToolPreInvokeResult(modified_payload=payload, violation=violation, continue_processing=False)
-        
         return ToolPostInvokeResult(continue_processing=True)
