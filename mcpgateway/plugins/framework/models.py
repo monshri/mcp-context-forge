@@ -84,6 +84,7 @@ class PluginMode(str, Enum):
     DISABLED = "disabled"
 
 
+
 class BaseTemplate(BaseModel):
     """Base Template.The ToolTemplate, PromptTemplate and ResourceTemplate could be extended using this
 
@@ -132,7 +133,7 @@ class ToolTemplate(BaseTemplate):
     result: bool = False
 
 
-class PromptTemplate(BaseModel):
+class PromptTemplate(BaseTemplate):
     """Prompt Template.
 
     Attributes:
@@ -156,7 +157,7 @@ class PromptTemplate(BaseModel):
     result: bool = False
 
 
-class ResourceTemplate(BaseModel):
+class ResourceTemplate(BaseTemplate):
     """Resource Template.
 
     Attributes:

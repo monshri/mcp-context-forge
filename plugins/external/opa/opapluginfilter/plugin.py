@@ -129,18 +129,27 @@ class OPAPluginFilter(Plugin):
             return ToolPreInvokeResult()
 
 
+        tool_context = []
+        policy_context = {}
+        tool_policy = None
+        tool_policy_endpoint = None
         # Get the tool for which policy needs to be applied
         policy_apply_config = self._config.applied_to
         if policy_apply_config and policy_apply_config.tools:
             for tool in policy_apply_config.tools:
                 tool_name = tool.name
                 if payload.name == tool_name:
-                    tool_context = [item.rsplit('.', 1)[-1] for item in tool.context]  if tool.context else None
-                    policy_context = {k : context.global_context.state[self.opa_context_key][k] for k in tool_context}
-                    tool_policy = tool.extensions.get("policy",None) if tool.extensions else None
+                    if tool.context:
+                        tool_context = [ctx.rsplit('.', 1)[-1] for ctx in tool.context]
+                    if self.opa_context_key in context.global_context.state:
+                        policy_context = {k : context.global_context.state[self.opa_context_key][k] for k in tool_context}
+                    if tool.extensions:
+                        tool_policy = tool.extensions.get("policy",None)
+                        tool_policy_endpoint = tool.extensions.get("policy_endpoint",None)
+
                     opa_input = BaseOPAInputKeys(kind="tools/call", user = "none", payload=payload.model_dump(), context=policy_context, request_ip = "none", headers = {}, response = {})
-                    opa_server_url = self.opa_config.opa_base_url +  tool_policy + "/allow"
-                    decision, decision_context = self._evaluate_opa_policy(opa_server_url,input_dict=OPAInput(input=opa_input))
+                    opa_server_url = "{opa_url}{policy}/{policy_endpoint}".format(opa_url = self.opa_config.opa_base_url, policy=tool_policy, policy_endpoint=tool_policy_endpoint)
+                    decision, decision_context = self._evaluate_opa_policy(url=opa_server_url,input=OPAInput(input=opa_input))
                     if not decision:
                         violation = PluginViolation(
                             reason="tool invocation not allowed",
