@@ -15,6 +15,7 @@ plugins:
             - "global.opa_policy_context.git_context"
           extensions:
             policy: "example"
+            policy_endpoint: "allow"
     conditions:
       # Apply to specific tools/servers
       - server_ids: []  # Apply to all servers
