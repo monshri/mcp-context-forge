@@ -52,18 +52,6 @@ plugins:
       opa_base_url: "http://127.0.0.1:8181/v1/data/"
 ```
 The `applied_to` key in config.yaml, has been used to selectively apply policies and provide context for a specific tool. 
-
-In the example above:
-```applied_to:
-      tools:
-        - name: "fast-time-git-status"
-          context:
-            - "global.opa_policy_context.git_context"
-          extensions:
-            policy: "example"
-            policy_endpoint: "allow"
-```
-
 Here, using this, you can provide the `name` of the tool you want to apply policy on, you can also provide 
 context to the tool with the prefix `global` if it needs to check the context in global context provided. 
 The key `opa_policy_context` is used to get context for policies and you can have multiple contexts within this key using `git_context` key.
@@ -117,36 +105,31 @@ curl -s -X POST -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
 
 2. To test this plugin with the above tool `fast-time-git-status` you can either invoke it through the UI
 ```bash
+# 1️⃣  Add fast-time server to mcpgateway
 curl -s -X POST -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"name":"fast-time","url":"http://localhost:9000/sse"}' \
      http://localhost:4444/gateways
-```
 
-
-```bash
+# 2️⃣  Check if policies are in action. 
+# Deny case
 curl -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
      -d '{"jsonrpc":"2.0","id":1,"method":"fast-time-git-status","params":{"repo_path":"path/BIM"}}' \
      http://localhost:4444/rpc
-```
 
-This should output policy_deny because 
-```bash
-{"detail":"policy_deny"}
-```
+>>>>
+`{"detail":"policy_deny"}`
 
-
-
-```bash
+# 3️⃣ Check if policies are in action 
+# Allow case 
 curl -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
      -d '{"jsonrpc":"2.0","id":1,"method":"fast-time-git-status","params":{"repo_path":"path/IBM"}}' \
      http://localhost:4444/rpc
-```
 
-```bash
-{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"/Users/shritipriya/Documents/2025/271-PR/mcp-context-forge/path/IBM"}],"is_error":false},"id":1}
+>>>>
+`{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"/Users/shritipriya/Documents/2025/271-PR/mcp-context-forge/path/IBM"}],"is_error":false},"id":1}`
 ```
 
 ## License
