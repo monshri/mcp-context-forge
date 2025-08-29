@@ -7,7 +7,7 @@ An OPA plugin that enforces rego policies on requests and allows/denies requests
 
 The OPA plugin is composed of two components:
 1. OPA server 
-2. The pre/post hooks on tools/prompts for OP.  A plugin behaving as OPA client and calling the OPA server.
+2. The pre hooks on tools that talks to OPA server running as background service within the same container. Whenever a tool is invoked, if OPA Plugin is in action, a policy will be applied on the tool call to allow/deny it.
 
 ### OPA Server
 To define a policy file you need to go into opaserver/rego and create a sample policy file for you. 
@@ -77,24 +77,30 @@ In the `config` key in `config.yaml` file OPAPlugin consists of the following th
 3. Once you have your plugin defined in `config.yaml` and policy added in the rego file, run the following commands to build your OPA Plugin external MCP server using:
 * make build -> This will build a docker image named `opapluginfilter`
 
-```Verification point:
+```bash
+Verification point:
 docker images mcpgateway/opapluginfilter:latest
 REPOSITORY                   TAG       IMAGE ID       CREATED        SIZE
-mcpgateway/opapluginfilter   latest    a94428dd9c64   1 second ago   810MB```
+mcpgateway/opapluginfilter   latest    a94428dd9c64   1 second ago   810MB
+```
 
 * make start -> This will start the OPA Plugin server 
-```Verification point:
+```bash
+Verification point:
 ✅ Container started
 🔍 Health check status:
-starting```
+starting
+```
 
 ## Testing with gateway
 
 1. Add server fast-time that exposes git tools in the mcp gateway 
-```curl -s -X POST -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
+```bash
+curl -s -X POST -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"name":"fast-time","url":"http://localhost:9000/sse"}' \
-     http://localhost:4444/gateways```
+     http://localhost:4444/gateways
+```
 
 2. This adds server to the gateway and exposes all the tools for git. You would see `fast-time-git-status` as the tool appearing in the tools tab of mcp gateway.
 
@@ -110,28 +116,38 @@ starting```
   ```
 
 2. To test this plugin with the above tool `fast-time-git-status` you can either invoke it through the UI
-```curl -s -X POST -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
+```bash
+curl -s -X POST -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"name":"fast-time","url":"http://localhost:9000/sse"}' \
-     http://localhost:4444/gateways```
+     http://localhost:4444/gateways
+```
 
 
-```curl -X POST -H "Content-Type: application/json" \
+```bash
+curl -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
      -d '{"jsonrpc":"2.0","id":1,"method":"fast-time-git-status","params":{"repo_path":"path/BIM"}}' \
-     http://localhost:4444/rpc```
+     http://localhost:4444/rpc
+```
 
 This should output policy_deny because 
-```{"detail":"policy_deny"}```
+```bash
+{"detail":"policy_deny"}
+```
 
 
 
-```curl -X POST -H "Content-Type: application/json" \
+```bash
+curl -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
      -d '{"jsonrpc":"2.0","id":1,"method":"fast-time-git-status","params":{"repo_path":"path/IBM"}}' \
-     http://localhost:4444/rpc```
+     http://localhost:4444/rpc
+```
 
-```{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"/Users/shritipriya/Documents/2025/271-PR/mcp-context-forge/path/IBM"}],"is_error":false},"id":1}```
+```bash
+{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"/Users/shritipriya/Documents/2025/271-PR/mcp-context-forge/path/IBM"}],"is_error":false},"id":1}
+```
 
 ## License
 
