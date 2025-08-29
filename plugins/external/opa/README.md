@@ -77,24 +77,24 @@ In the `config` key in `config.yaml` file OPAPlugin consists of the following th
 3. Once you have your plugin defined in `config.yaml` and policy added in the rego file, run the following commands to build your OPA Plugin external MCP server using:
 * make build -> This will build a docker image named `opapluginfilter`
 
-Verification point:
+```Verification point:
 docker images mcpgateway/opapluginfilter:latest
 REPOSITORY                   TAG       IMAGE ID       CREATED        SIZE
-mcpgateway/opapluginfilter   latest    a94428dd9c64   1 second ago   810MB
+mcpgateway/opapluginfilter   latest    a94428dd9c64   1 second ago   810MB```
 
 * make start -> This will start the OPA Plugin server 
-Verification point:
+```Verification point:
 ✅ Container started
 🔍 Health check status:
-starting
+starting```
 
 ## Testing with gateway
 
 1. Add server fast-time that exposes git tools in the mcp gateway 
-curl -s -X POST -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
+```curl -s -X POST -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"name":"fast-time","url":"http://localhost:9000/sse"}' \
-     http://localhost:4444/gateways
+     http://localhost:4444/gateways```
 
 2. This adds server to the gateway and exposes all the tools for git. You would see `fast-time-git-status` as the tool appearing in the tools tab of mcp gateway.
 
@@ -126,10 +126,10 @@ This should output policy_deny because
 
 
 
-curl -X POST -H "Content-Type: application/json" \
+```curl -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
      -d '{"jsonrpc":"2.0","id":1,"method":"fast-time-git-status","params":{"repo_path":"path/IBM"}}' \
-     http://localhost:4444/rpc
+     http://localhost:4444/rpc```
 
 ```{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"/Users/shritipriya/Documents/2025/271-PR/mcp-context-forge/path/IBM"}],"is_error":false},"id":1}```
 

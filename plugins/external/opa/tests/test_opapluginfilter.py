@@ -9,7 +9,8 @@ from opapluginfilter.plugin import OPAPluginFilter
 from mcpgateway.plugins.framework import (
     PluginConfig,
     PluginContext,
-    PromptPrehookPayload,
+    ToolPreInvokePayload,
+    GlobalContext
 )
 
 
@@ -19,14 +20,16 @@ async def test_opapluginfilter():
     config = PluginConfig(
         name="test",
         kind="opapluginfilter.OPAPluginFilter",
-        hooks=["prompt_pre_fetch"],
+        hooks=["tool_pre_invoke"],
         config={"setting_one": "test_value"},
     )
 
     plugin = OPAPluginFilter(config)
 
     # Test your plugin logic
-    payload = PromptPrehookPayload(name="test_prompt", args={"arg0": "This is an argument"})
-    context = PluginContext(request_id="1", server_id="2")
-    result = await plugin.prompt_pre_fetch(payload, context)
+    payload = ToolPreInvokePayload(name="test_tool", args={"repo_path": "This is an argument"})
+    context = PluginContext(global_context=GlobalContext(request_id="1", server_id="2"))
+    result = await plugin.tool_pre_invoke(payload, context)
+    import pdb
+    pdb.set_trace()
     assert result.continue_processing
