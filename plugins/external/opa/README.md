@@ -63,7 +63,7 @@ In the `config` key in `config.yaml` file OPAPlugin consists of the following th
 3. Now suppose i have a sample policy, in `example.rego` file that allows a tool invocation only when "IBM" key word is present in the repo_path. Add the sample policy file or policy rego file that you defined, in `plugins/external/opa/opaserver/rego`.
 
 3. Once you have your plugin defined in `config.yaml` and policy added in the rego file, run the following commands to build your OPA Plugin external MCP server using:
-* make build -> This will build a docker image named `opapluginfilter`
+* `make build`:  This will build a docker image named `opapluginfilter`
 
 ```bash
 Verification point:
@@ -72,7 +72,7 @@ REPOSITORY                   TAG       IMAGE ID       CREATED        SIZE
 mcpgateway/opapluginfilter   latest    a94428dd9c64   1 second ago   810MB
 ```
 
-* make start -> This will start the OPA Plugin server 
+* `make start`: This will start the OPA Plugin server 
 ```bash
 Verification point:
 ✅ Container started
@@ -118,7 +118,7 @@ curl -X POST -H "Content-Type: application/json" \
      -d '{"jsonrpc":"2.0","id":1,"method":"fast-time-git-status","params":{"repo_path":"path/BIM"}}' \
      http://localhost:4444/rpc
 
->>>>
+>>>
 `{"detail":"policy_deny"}`
 
 # 3️⃣ Check if policies are in action 
@@ -128,7 +128,7 @@ curl -X POST -H "Content-Type: application/json" \
      -d '{"jsonrpc":"2.0","id":1,"method":"fast-time-git-status","params":{"repo_path":"path/IBM"}}' \
      http://localhost:4444/rpc
 
->>>>
+>>>
 `{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"/Users/shritipriya/Documents/2025/271-PR/mcp-context-forge/path/IBM"}],"is_error":false},"id":1}`
 ```
 
