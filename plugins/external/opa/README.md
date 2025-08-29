@@ -16,15 +16,13 @@ Once you have this file created in this location, when building the server, the 
 In the `run_server.sh` file, the opa server will run as a background service in the container with the rego policy file.
 
 ### OPA Plugin 
-The OPA plugin runs as an external plugin with pre/post tool invocations. So everytime, a tool invocation is made, and
-if OPAPluginFilter has been defined in config.yaml file, the tool invocation will pass through this OPA Plugin.
+The OPA plugin runs as an external plugin with pre/post tool invocations. So everytime, a tool invocation is made, and if OPAPluginFilter has been defined in config.yaml file, the tool invocation will pass through this OPA Plugin.
 
 
 ## Installation
 
-1. Copy .env.example .env
-2. Enable plugins in `.env` using `PLUGINS_ENABLED=true`
-3. Add the plugin configuration to `plugins/config.yaml`:
+1. In the folder `external/opa`, copy .env.example .env
+2. Add the plugin configuration to `plugins/external/opa/resources/plugins/config.yaml`:
 
 ```yaml
 plugins:
@@ -74,9 +72,66 @@ related to which policy to run and what endpoint to call for that policy.
 In the `config` key in `config.yaml` file OPAPlugin consists of the following things:
 `opa_base_url` : It is the base url on which opa server is running.
 
-## Testing
+3. Now suppose i have a sample policy, in `example.rego` file that allows a tool invocation only when "IBM" key word is present in the repo_path. Add the sample policy file or policy rego file that you defined, in `plugins/external/opa/opaserver/rego`.
+
+3. Once you have your plugin defined in `config.yaml` and policy added in the rego file, run the following commands to build your OPA Plugin external MCP server using:
+* make build -> This will build a docker image named `opapluginfilter`
+
+Verification point:
+docker images mcpgateway/opapluginfilter:latest
+REPOSITORY                   TAG       IMAGE ID       CREATED        SIZE
+mcpgateway/opapluginfilter   latest    a94428dd9c64   1 second ago   810MB
+
+* make start -> This will start the OPA Plugin server 
+Verification point:
+✅ Container started
+🔍 Health check status:
+starting
+
+## Testing with gateway
+
+1. Add server fast-time that exposes git tools in the mcp gateway 
+curl -s -X POST -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"name":"fast-time","url":"http://localhost:9000/sse"}' \
+     http://localhost:4444/gateways
+
+2. This adds server to the gateway and exposes all the tools for git. You would see `fast-time-git-status` as the tool appearing in the tools tab of mcp gateway.
+
+3. The next step is to enable the opa plugin which you can do by adding `PLUGINS_ENABLED=true` and the following blob in `plugins/config.yaml` file. This will indicate that OPA Plugin is running as an external MCP server.
+  
+  ```yaml
+  - name: "OPAPluginFilter"
+    kind: "external"
+    priority: 10 # adjust the priority
+    mcp:
+      proto: STREAMABLEHTTP
+      url: http://127.0.0.1:8000/mcp
+  ```
+
+2. To test this plugin with the above tool `fast-time-git-status` you can either invoke it through the UI
+```curl -s -X POST -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"name":"fast-time","url":"http://localhost:9000/sse"}' \
+     http://localhost:4444/gateways```
 
 
+```curl -X POST -H "Content-Type: application/json" \
+     -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"fast-time-git-status","params":{"repo_path":"path/BIM"}}' \
+     http://localhost:4444/rpc```
+
+This should output policy_deny because 
+```{"detail":"policy_deny"}```
+
+
+
+curl -X POST -H "Content-Type: application/json" \
+     -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"fast-time-git-status","params":{"repo_path":"path/IBM"}}' \
+     http://localhost:4444/rpc
+
+```{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"/Users/shritipriya/Documents/2025/271-PR/mcp-context-forge/path/IBM"}],"is_error":false},"id":1}```
 
 ## License
 
