@@ -99,7 +99,7 @@ class BaseTemplate(BaseModel):
         ['global.key1.key2', 'local.key1.key2']
         >>> base = BaseTemplate(context=["global.key1.key2"], extensions={"policy" : "sample policy"})
         >>> base.extensions
-        {'policy' : 'sample policy'}
+        {'policy': 'sample policy'}
     """
 
     context: Optional[list[str]] = None
