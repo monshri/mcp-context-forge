@@ -84,7 +84,6 @@ class PluginMode(str, Enum):
     DISABLED = "disabled"
 
 
-
 class BaseTemplate(BaseModel):
     """Base Template.The ToolTemplate, PromptTemplate and ResourceTemplate could be extended using this
 
@@ -97,7 +96,7 @@ class BaseTemplate(BaseModel):
     Examples:
         >>> base = BaseTemplate(context=["global.key1.key2", "local.key1.key2"])
         >>> base.context
-        ["global.key1.key2", "local.key1.key2"]
+        ['global.key1.key2', 'local.key1.key2']
         >>> base = BaseTemplate(context=["global.key1.key2"], extensions={"policy" : "sample policy"})
         >>> base.extensions
         {"policy" : "sample policy"}
@@ -128,7 +127,7 @@ class ToolTemplate(BaseTemplate):
         True
     """
 
-    name: str
+    tool_name: str
     fields: Optional[list[str]] = None
     result: bool = False
 
