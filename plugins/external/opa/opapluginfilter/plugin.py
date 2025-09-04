@@ -137,7 +137,7 @@ class OPAPluginFilter(Plugin):
         policy_apply_config = self._config.applied_to
         if policy_apply_config and policy_apply_config.tools:
             for tool in policy_apply_config.tools:
-                tool_name = tool.name
+                tool_name = tool.tool_name
                 if payload.name == tool_name:
                     if tool.context:
                         tool_context = [ctx.rsplit('.', 1)[-1] for ctx in tool.context]

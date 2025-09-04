@@ -10,7 +10,7 @@ plugins:
     priority: 30
     applied_to:
       tools:
-        - name: "fast-time-git-status"
+        - tool_name: "fast-time-git-status"
           context:
             - "global.opa_policy_context.git_context"
           extensions:
