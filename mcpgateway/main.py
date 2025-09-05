@@ -2757,9 +2757,6 @@ async def handle_rpc(request: Request, db: Session = Depends(get_db), user: str 
             # Backward compatibility: Try to invoke as a tool directly
             # This allows both old format (method=tool_name) and new format (method=tools/call)
             # Standard
-            import pdb
-
-            pdb.set_trace()
             headers = {k.lower(): v for k, v in request.headers.items()}
             try:
                 result = await tool_service.invoke_tool(db=db, name=method, arguments=params, request_headers=headers)

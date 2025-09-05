@@ -30,6 +30,4 @@ async def test_opapluginfilter():
     payload = ToolPreInvokePayload(name="test_tool", args={"repo_path": "This is an argument"})
     context = PluginContext(global_context=GlobalContext(request_id="1", server_id="2"))
     result = await plugin.tool_pre_invoke(payload, context)
-    import pdb
-    pdb.set_trace()
     assert result.continue_processing
