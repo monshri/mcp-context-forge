@@ -37,7 +37,7 @@ class MockOPAHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b'{"result": false}')
             # Process data dictionary...
         except json.JSONDecodeError:
-            # Handle invalid JSON 
+            # Handle invalid JSON
             self.send_response(400)
             self.end_headers()
             self.wfile.write(b"Invalid JSON")

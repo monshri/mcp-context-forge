@@ -20,6 +20,7 @@ from mcpgateway.plugins.framework import (
     ToolPreInvokePayload,
     GlobalContext
 )
+from mcpgateway.plugins.framework.models import AppliedTo, ToolTemplate
 
 from tests.server.opa_server import run_mock_opa
 
@@ -32,11 +33,10 @@ async def test_benign_opapluginfilter():
         name="test",
         kind="opapluginfilter.OPAPluginFilter",
         hooks=["tool_pre_invoke"],
-        applied_to = {"tools" : [{"tool_name": "fast-time-git-status", "context": ["global.opa_policy_context.git_context"], "extensions": {"policy": "example", "policy_endpoint" : "allow"}}]},
         config={"opa_base_url": "http://127.0.0.1:8181/v1/data/"}
     )
     mock_server = run_mock_opa()
-    
+
 
     plugin = OPAPluginFilter(config)
 
@@ -56,7 +56,6 @@ async def test_malign_opapluginfilter():
         name="test",
         kind="opapluginfilter.OPAPluginFilter",
         hooks=["tool_pre_invoke"],
-        applied_to = {"tools" : [{"tool_name": "fast-time-git-status", "context": ["global.opa_policy_context.git_context"], "extensions": {"policy": "example", "policy_endpoint" : "allow"}}]},
         config={"opa_base_url": "http://127.0.0.1:8181/v1/data/"}
     )
     mock_server = run_mock_opa()
@@ -68,7 +67,7 @@ async def test_malign_opapluginfilter():
     result = await plugin.tool_pre_invoke(payload, context)
     mock_server.shutdown()
     assert not result.continue_processing and result.violation.code == "deny"
-    
+
 @pytest.mark.asyncio
 # Test for opa plugin not applied to any of the tools
 async def test_applied_to_opaplugin():
@@ -77,7 +76,6 @@ async def test_applied_to_opaplugin():
         name="test",
         kind="opapluginfilter.OPAPluginFilter",
         hooks=["tool_pre_invoke"],
-        applied_to = {},
         config={"opa_base_url": "http://127.0.0.1:8181/v1/data/"}
     )
     mock_server = run_mock_opa()

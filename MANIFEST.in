@@ -97,7 +97,7 @@ prune deployment
 prune mcp-servers
 prune agent_runtimes
 
-# Exclude opa 
+# Exclude opa
 exclude  plugins/external/opa/.dockerignore
 exclude plugins/external/opa/.env.template
 exclude plugins/external/opa/.ruff.toml
