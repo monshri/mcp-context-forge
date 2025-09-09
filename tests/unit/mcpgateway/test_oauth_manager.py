@@ -7,14 +7,19 @@ Authors: Mihai Criveti
 Unit tests for OAuth Manager and Token Storage Service.
 """
 
-import pytest
-from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, patch, MagicMock, Mock
+# Standard
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
+# Third-Party
 import aiohttp
-from mcpgateway.services.oauth_manager import OAuthManager, OAuthError
+import pytest
+
+# First-Party
+from mcpgateway.db import OAuthToken
+from mcpgateway.services.oauth_manager import OAuthError, OAuthManager
 from mcpgateway.services.token_storage_service import TokenStorageService
 from mcpgateway.utils.oauth_encryption import OAuthEncryption
-from mcpgateway.db import OAuthToken
 
 
 class TestOAuthManager:
@@ -1577,10 +1582,11 @@ class TestTokenStorageService:
 
                 service = TokenStorageService(mock_db)
 
-                # Mock datetime.utcnow for consistent testing
+                # Mock datetime.now for consistent testing
                 fixed_time = datetime(2025, 1, 1, 12, 0, 0)
                 with patch('mcpgateway.services.token_storage_service.datetime') as mock_dt:
-                    mock_dt.utcnow.return_value = fixed_time
+                    mock_dt.now.return_value = fixed_time
+                    mock_dt.now.return_value = fixed_time
 
                     result = await service.store_tokens(
                         gateway_id="gateway123",
@@ -1620,7 +1626,8 @@ class TestTokenStorageService:
 
             fixed_time = datetime(2025, 1, 1, 12, 0, 0)
             with patch('mcpgateway.services.token_storage_service.datetime') as mock_dt:
-                mock_dt.utcnow.return_value = fixed_time
+                mock_dt.now.return_value = fixed_time
+                mock_dt.now.return_value = fixed_time
 
                 result = await service.store_tokens(
                     gateway_id="gateway123",
@@ -1676,7 +1683,8 @@ class TestTokenStorageService:
 
                 fixed_time = datetime(2025, 1, 1, 12, 0, 0)
                 with patch('mcpgateway.services.token_storage_service.datetime') as mock_dt:
-                    mock_dt.utcnow.return_value = fixed_time
+                    mock_dt.now.return_value = fixed_time
+                    mock_dt.now.return_value = fixed_time
 
                     result = await service.store_tokens(
                         gateway_id="gateway123",
@@ -1718,7 +1726,8 @@ class TestTokenStorageService:
 
                 fixed_time = datetime(2025, 1, 1, 12, 0, 0)
                 with patch('mcpgateway.services.token_storage_service.datetime') as mock_dt:
-                    mock_dt.utcnow.return_value = fixed_time
+                    mock_dt.now.return_value = fixed_time
+                    mock_dt.now.return_value = fixed_time
 
                     result = await service.store_tokens(
                         gateway_id="gateway123",
@@ -1765,7 +1774,7 @@ class TestTokenStorageService:
         mock_db = Mock()
 
         # Create valid token record
-        future_time = datetime.utcnow() + timedelta(hours=1)
+        future_time = datetime.now(tz=timezone.utc) + timedelta(hours=1)
         token_record = OAuthToken(
             gateway_id="gateway123",
             user_id="user123",
@@ -1799,7 +1808,7 @@ class TestTokenStorageService:
         """Test getting valid token without encryption."""
         mock_db = Mock()
 
-        future_time = datetime.utcnow() + timedelta(hours=1)
+        future_time = datetime.now(tz=timezone.utc) + timedelta(hours=1)
         token_record = OAuthToken(
             gateway_id="gateway123",
             user_id="user123",
@@ -1840,7 +1849,7 @@ class TestTokenStorageService:
         mock_db = Mock()
 
         # Create expired token record
-        past_time = datetime.utcnow() - timedelta(hours=1)
+        past_time = datetime.now(tz=timezone.utc) - timedelta(hours=1)
         token_record = OAuthToken(
             gateway_id="gateway123",
             user_id="user123",
@@ -1870,7 +1879,7 @@ class TestTokenStorageService:
         """Test getting expired token without refresh token."""
         mock_db = Mock()
 
-        past_time = datetime.utcnow() - timedelta(hours=1)
+        past_time = datetime.now(tz=timezone.utc) - timedelta(hours=1)
         token_record = OAuthToken(
             gateway_id="gateway123",
             user_id="user123",
@@ -1896,7 +1905,7 @@ class TestTokenStorageService:
         mock_db = Mock()
 
         # Token expires in 2 minutes, threshold is 5 minutes (300 seconds)
-        near_expiry = datetime.utcnow() + timedelta(minutes=2)
+        near_expiry = datetime.now(tz=timezone.utc) + timedelta(minutes=2)
         token_record = OAuthToken(
             gateway_id="gateway123",
             user_id="user123",
@@ -1941,7 +1950,7 @@ class TestTokenStorageService:
         """Test getting any valid token for a gateway."""
         mock_db = Mock()
 
-        future_time = datetime.utcnow() + timedelta(hours=1)
+        future_time = datetime.now(tz=timezone.utc) + timedelta(hours=1)
         token_record = OAuthToken(
             gateway_id="gateway123",
             user_id="any_user",
@@ -1981,7 +1990,7 @@ class TestTokenStorageService:
         """Test getting any expired token with refresh capability."""
         mock_db = Mock()
 
-        past_time = datetime.utcnow() - timedelta(hours=1)
+        past_time = datetime.now(tz=timezone.utc) - timedelta(hours=1)
         token_record = OAuthToken(
             gateway_id="gateway123",
             user_id="any_user",
@@ -2034,7 +2043,7 @@ class TestTokenStorageService:
                 user_id="user123",
                 access_token="expired_token",
                 refresh_token="refresh_token",
-                expires_at=datetime.utcnow() - timedelta(hours=1)
+                expires_at=datetime.now(tz=timezone.utc) - timedelta(hours=1)
             )
 
             result = await service._refresh_access_token(token_record)
@@ -2088,7 +2097,7 @@ class TestTokenStorageService:
 
             service = TokenStorageService(mock_db)
 
-            past_time = datetime.utcnow() - timedelta(hours=1)
+            past_time = datetime.now(tz=timezone.utc) - timedelta(hours=1)
             token_record = OAuthToken(
                 gateway_id="gateway123",
                 user_id="user123",
@@ -2110,7 +2119,7 @@ class TestTokenStorageService:
             service = TokenStorageService(mock_db)
 
             # Token expires in 2 minutes, threshold is 5 minutes
-            near_expiry = datetime.utcnow() + timedelta(minutes=2)
+            near_expiry = datetime.now(tz=timezone.utc) + timedelta(minutes=2)
             token_record = OAuthToken(
                 gateway_id="gateway123",
                 user_id="user123",
@@ -2132,7 +2141,7 @@ class TestTokenStorageService:
             service = TokenStorageService(mock_db)
 
             # Token expires in 10 minutes, threshold is 5 minutes
-            future_time = datetime.utcnow() + timedelta(minutes=10)
+            future_time = datetime.now(tz=timezone.utc) + timedelta(minutes=10)
             token_record = OAuthToken(
                 gateway_id="gateway123",
                 user_id="user123",
@@ -2323,7 +2332,8 @@ class TestTokenStorageService:
             service = TokenStorageService(mock_db)
 
             with patch('mcpgateway.services.token_storage_service.datetime') as mock_dt:
-                mock_dt.utcnow.return_value = datetime(2025, 1, 1, 12, 0, 0)
+                mock_dt.now.return_value = datetime(2025, 1, 1, 12, 0, 0)
+                mock_dt.now.return_value = datetime(2025, 1, 1, 12, 0, 0)
 
                 result = await service.cleanup_expired_tokens(max_age_days=30)
 
@@ -2552,6 +2562,7 @@ class TestOAuthEncryption:
         encryption = OAuthEncryption("test_key")
 
         # Create base64 data that's long enough but not encrypted
+        # Standard
         import base64
         fake_data = b"a" * 40  # 40 bytes of 'a'
         base64_fake = base64.urlsafe_b64encode(fake_data).decode()
@@ -2579,6 +2590,7 @@ class TestOAuthEncryption:
 
     def test_get_oauth_encryption_function(self):
         """Test the get_oauth_encryption utility function."""
+        # First-Party
         from mcpgateway.utils.oauth_encryption import get_oauth_encryption
 
         encryption = get_oauth_encryption("test_secret")
