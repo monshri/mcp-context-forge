@@ -809,28 +809,6 @@ class ToolService:
         server_id = gateway_id if isinstance(gateway_id, str) else "unknown"
         global_context = GlobalContext(request_id=request_id, server_id=server_id, tenant_id=None)
 
-<<<<<<< HEAD
-        if self._plugin_manager:
-            pre_result, context_table = await self._plugin_manager.tool_pre_invoke(payload=ToolPreInvokePayload(name=name, args=arguments), global_context=global_context, local_contexts=None)
-
-            if not pre_result.continue_processing:
-                # Plugin blocked the request
-                if pre_result.violation:
-                    plugin_name = pre_result.violation.plugin_name
-                    violation_reason = pre_result.violation.reason
-                    violation_desc = pre_result.violation.description
-                    violation_code = pre_result.violation.code
-                    raise PluginViolationError(f"Tool invocation blocked by plugin {plugin_name}: {violation_code} - {violation_reason} ({violation_desc})", pre_result.violation)
-                raise PluginViolationError("Tool invocation blocked by plugin")
-
-            # Use modified payload if provided
-            if pre_result.modified_payload:
-                payload = pre_result.modified_payload
-                name = payload.name
-                arguments = payload.args
-
-=======
->>>>>>> remotes/teryl/feat/http_plugin_hooks
         start_time = time.monotonic()
         success = False
         error_message = None
@@ -1049,26 +1027,11 @@ class ToolService:
                 # Plugin hook: tool post-invoke
                 if self._plugin_manager:
                     post_result, _ = await self._plugin_manager.tool_post_invoke(
-<<<<<<< HEAD
-                        payload=ToolPostInvokePayload(name=name, result=tool_result.model_dump(by_alias=True)), global_context=global_context, local_contexts=context_table
-                    )
-                    if not post_result.continue_processing:
-                        # Plugin blocked the request
-                        if post_result.violation:
-                            plugin_name = post_result.violation.plugin_name
-                            violation_reason = post_result.violation.reason
-                            violation_desc = post_result.violation.description
-                            violation_code = post_result.violation.code
-                            raise PluginViolationError(f"Tool result blocked by plugin {plugin_name}: {violation_code} - {violation_reason} ({violation_desc})", post_result.violation)
-                        raise PluginViolationError("Tool result blocked by plugin")
-
-=======
                         payload=ToolPostInvokePayload(name=name, result=tool_result.model_dump(by_alias=True)),
                         global_context=global_context,
                         local_contexts=context_table,
                         violations_as_exceptions=True,
                     )
->>>>>>> remotes/teryl/feat/http_plugin_hooks
                     # Use modified payload if provided
                     if post_result.modified_payload:
                         # Reconstruct ToolResult from modified result

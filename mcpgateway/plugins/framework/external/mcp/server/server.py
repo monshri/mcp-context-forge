@@ -136,22 +136,14 @@ class ExternalPluginServer:
         global_plugin_manager = PluginManager()
         plugin_timeout = global_plugin_manager.config.plugin_settings.plugin_timeout if global_plugin_manager.config else DEFAULT_PLUGIN_TIMEOUT
         plugin = global_plugin_manager.get_plugin(plugin_name)
-<<<<<<< HEAD
-        result_payload: dict[str, Any] = {}
-=======
         result_payload: dict[str, Any] = {PLUGIN_NAME: plugin_name}
->>>>>>> origin
         try:
             if plugin:
                 _payload = payload_model.model_validate(payload)
                 _context = PluginContext.model_validate(context)
                 result = await asyncio.wait_for(hook_function(plugin, _payload, _context), plugin_timeout)
                 result_payload[RESULT] = result.model_dump()
-<<<<<<< HEAD
-                if _context.state or _context.metadata or _context.global_context.state:
-=======
                 if not _context.is_empty():
->>>>>>> origin
                     result_payload[CONTEXT] = _context.model_dump()
                 return result_payload
             raise ValueError(f"Unable to retrieve plugin {plugin_name} to execute.")
