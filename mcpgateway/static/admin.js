@@ -252,8 +252,12 @@ function isInactiveChecked(type) {
 }
 
 // Enhanced fetch with timeout and better error handling
-function fetchWithTimeout(url, options = {}, timeout = 30000) {
-    // Increased from 10000
+function fetchWithTimeout(
+    url,
+    options = {},
+    timeout = window.MCPGATEWAY_UI_TOOL_TEST_TIMEOUT || 60000,
+) {
+    // Use configurable timeout from window.MCPGATEWAY_UI_TOOL_TEST_TIMEOUT
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
         console.warn(`Request to ${url} timed out after ${timeout}ms`);
@@ -568,6 +572,8 @@ function closeModal(modalId, clearId = null) {
             cleanupGatewayTestModal();
         } else if (modalId === "tool-test-modal") {
             cleanupToolTestModal(); // ADD THIS LINE
+        } else if (modalId === "prompt-test-modal") {
+            cleanupPromptTestModal();
         }
 
         modal.classList.add("hidden");
@@ -661,7 +667,7 @@ async function loadMetricsInternal() {
         const result = await fetchWithTimeoutAndRetry(
             `${window.ROOT_PATH}/admin/metrics`,
             {}, // options
-            45000, // Increased timeout specifically for metrics (was 20000)
+            (window.MCPGATEWAY_UI_TOOL_TEST_TIMEOUT || 60000) * 1.5, // Use 1.5x configurable timeout for metrics
             MAX_METRICS_RETRIES,
         );
 
@@ -711,7 +717,7 @@ async function loadMetricsInternal() {
 async function fetchWithTimeoutAndRetry(
     url,
     options = {},
-    timeout = 20000,
+    timeout = window.MCPGATEWAY_UI_TOOL_TEST_TIMEOUT || 60000,
     maxRetries = 3,
 ) {
     let lastError;
@@ -1983,6 +1989,34 @@ async function editTool(toolId) {
             tagsField.value = tool.tags ? tool.tags.join(", ") : "";
         }
 
+        const teamId = new URL(window.location.href).searchParams.get(
+            "team_id",
+        );
+
+        if (teamId) {
+            const hiddenInput = document.createElement("input");
+            hiddenInput.type = "hidden";
+            hiddenInput.name = "team_id";
+            hiddenInput.value = teamId;
+            editForm.appendChild(hiddenInput);
+        }
+
+        const visibility = tool.visibility; // Ensure visibility is either 'public', 'team', or 'private'
+        const publicRadio = safeGetElement("edit-tool-visibility-public");
+        const teamRadio = safeGetElement("edit-tool-visibility-team");
+        const privateRadio = safeGetElement("edit-tool-visibility-private");
+
+        if (visibility) {
+            // Check visibility and set the corresponding radio button
+            if (visibility === "public" && publicRadio) {
+                publicRadio.checked = true;
+            } else if (visibility === "team" && teamRadio) {
+                teamRadio.checked = true;
+            } else if (visibility === "private" && privateRadio) {
+                privateRadio.checked = true;
+            }
+        }
+
         // Handle JSON fields safely with validation
         const headersValidation = validateJson(
             JSON.stringify(tool.headers || {}),
@@ -3183,6 +3217,34 @@ async function editGateway(gatewayId) {
             tagsField.value = gateway.tags ? gateway.tags.join(", ") : "";
         }
 
+        const teamId = new URL(window.location.href).searchParams.get(
+            "team_id",
+        );
+
+        if (teamId) {
+            const hiddenInput = document.createElement("input");
+            hiddenInput.type = "hidden";
+            hiddenInput.name = "team_id";
+            hiddenInput.value = teamId;
+            editForm.appendChild(hiddenInput);
+        }
+
+        const visibility = gateway.visibility; // Ensure visibility is either 'public', 'team', or 'private'
+        const publicRadio = safeGetElement("edit-gateway-visibility-public");
+        const teamRadio = safeGetElement("edit-gateway-visibility-team");
+        const privateRadio = safeGetElement("edit-gateway-visibility-private");
+
+        if (visibility) {
+            // Check visibility and set the corresponding radio button
+            if (visibility === "public" && publicRadio) {
+                publicRadio.checked = true;
+            } else if (visibility === "team" && teamRadio) {
+                teamRadio.checked = true;
+            } else if (visibility === "private" && privateRadio) {
+                privateRadio.checked = true;
+            }
+        }
+
         if (transportField) {
             transportField.value = gateway.transport || "SSE"; // falls back to SSE(default)
         }
@@ -3379,27 +3441,87 @@ async function viewServer(serverId) {
         if (serverDetailsDiv) {
             const container = document.createElement("div");
             container.className =
-                "space-y-2 dark:bg-gray-900 dark:text-gray-100";
+                "space-y-4 dark:bg-gray-900 dark:text-gray-100";
+
+            // Header section with server name and icon
+            const headerDiv = document.createElement("div");
+            headerDiv.className =
+                "flex items-center space-x-3 pb-4 border-b border-gray-200 dark:border-gray-600";
+
+            if (server.icon) {
+                const iconImg = document.createElement("img");
+                iconImg.src = server.icon;
+                iconImg.alt = `${server.name} icon`;
+                iconImg.className = "w-12 h-12 rounded-lg object-cover";
+                iconImg.onerror = function () {
+                    this.style.display = "none";
+                };
+                headerDiv.appendChild(iconImg);
+            }
+
+            const headerTextDiv = document.createElement("div");
+            const serverTitle = document.createElement("h2");
+            serverTitle.className =
+                "text-xl font-bold text-gray-900 dark:text-gray-100";
+            serverTitle.textContent = server.name;
+            headerTextDiv.appendChild(serverTitle);
+
+            if (server.description) {
+                const serverDesc = document.createElement("p");
+                serverDesc.className =
+                    "text-sm text-gray-600 dark:text-gray-400 mt-1";
+                serverDesc.textContent = server.description;
+                headerTextDiv.appendChild(serverDesc);
+            }
+
+            headerDiv.appendChild(headerTextDiv);
+            container.appendChild(headerDiv);
+
+            // Basic information section
+            const basicInfoDiv = document.createElement("div");
+            basicInfoDiv.className = "space-y-2";
+
+            const basicInfoTitle = document.createElement("strong");
+            basicInfoTitle.textContent = "Basic Information:";
+            basicInfoTitle.className =
+                "block text-gray-900 dark:text-gray-100 mb-3";
+            basicInfoDiv.appendChild(basicInfoTitle);
 
             const fields = [
-                { label: "Name", value: server.name },
-                { label: "URL", value: server.url },
-                { label: "Description", value: server.description || "N/A" },
+                { label: "Server ID", value: server.id },
+                { label: "URL", value: getCatalogUrl(server) || "N/A" },
+                { label: "Type", value: "Virtual Server" },
             ];
 
             fields.forEach((field) => {
                 const p = document.createElement("p");
+                p.className = "text-sm";
                 const strong = document.createElement("strong");
                 strong.textContent = field.label + ": ";
+                strong.className =
+                    "font-medium text-gray-700 dark:text-gray-300";
                 p.appendChild(strong);
-                p.appendChild(document.createTextNode(field.value));
-                container.appendChild(p);
+                const valueSpan = document.createElement("span");
+                valueSpan.textContent = field.value;
+                valueSpan.className = "text-gray-600 dark:text-gray-400";
+                p.appendChild(valueSpan);
+                basicInfoDiv.appendChild(p);
             });
+
+            container.appendChild(basicInfoDiv);
+
+            // Tags and Status section
+            const tagsStatusDiv = document.createElement("div");
+            tagsStatusDiv.className =
+                "flex items-center justify-between space-y-2";
 
             // Tags section
             const tagsP = document.createElement("p");
+            tagsP.className = "text-sm";
             const tagsStrong = document.createElement("strong");
             tagsStrong.textContent = "Tags: ";
+            tagsStrong.className =
+                "font-medium text-gray-700 dark:text-gray-300";
             tagsP.appendChild(tagsStrong);
 
             if (server.tags && server.tags.length > 0) {
@@ -3411,25 +3533,229 @@ async function viewServer(serverId) {
                     tagsP.appendChild(tagSpan);
                 });
             } else {
-                tagsP.appendChild(document.createTextNode("None"));
+                const noneSpan = document.createElement("span");
+                noneSpan.textContent = "None";
+                noneSpan.className = "text-gray-500 dark:text-gray-400";
+                tagsP.appendChild(noneSpan);
             }
-            container.appendChild(tagsP);
 
-            // Status
+            // Status section
             const statusP = document.createElement("p");
+            statusP.className = "text-sm";
             const statusStrong = document.createElement("strong");
             statusStrong.textContent = "Status: ";
+            statusStrong.className =
+                "font-medium text-gray-700 dark:text-gray-300";
             statusP.appendChild(statusStrong);
 
             const statusSpan = document.createElement("span");
             statusSpan.className = `px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
                 server.isActive
-                    ? "bg-green-100 text-green-800"
-                    : "bg-red-100 text-red-800"
+                    ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300"
+                    : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300"
             }`;
             statusSpan.textContent = server.isActive ? "Active" : "Inactive";
             statusP.appendChild(statusSpan);
-            container.appendChild(statusP);
+
+            tagsStatusDiv.appendChild(tagsP);
+            tagsStatusDiv.appendChild(statusP);
+            container.appendChild(tagsStatusDiv);
+
+            // Associated Tools, Resources, and Prompts section
+            const associatedDiv = document.createElement("div");
+            associatedDiv.className = "mt-6 border-t pt-4";
+
+            const associatedTitle = document.createElement("strong");
+            associatedTitle.textContent = "Associated Items:";
+            associatedDiv.appendChild(associatedTitle);
+
+            // Tools section
+            if (server.associatedTools && server.associatedTools.length > 0) {
+                const toolsSection = document.createElement("div");
+                toolsSection.className = "mt-3";
+
+                const toolsLabel = document.createElement("p");
+                const toolsStrong = document.createElement("strong");
+                toolsStrong.textContent = "Tools: ";
+                toolsLabel.appendChild(toolsStrong);
+
+                const toolsList = document.createElement("div");
+                toolsList.className = "mt-1 space-y-1";
+
+                server.associatedTools.forEach((toolId) => {
+                    const toolItem = document.createElement("div");
+                    toolItem.className = "flex items-center space-x-2";
+
+                    const toolBadge = document.createElement("span");
+                    toolBadge.className =
+                        "inline-block bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full dark:bg-green-900 dark:text-green-200";
+                    toolBadge.textContent =
+                        window.toolMapping && window.toolMapping[toolId]
+                            ? window.toolMapping[toolId]
+                            : toolId;
+
+                    const toolIdSpan = document.createElement("span");
+                    toolIdSpan.className =
+                        "text-xs text-gray-500 dark:text-gray-400";
+                    toolIdSpan.textContent = `(${toolId})`;
+
+                    toolItem.appendChild(toolBadge);
+                    toolItem.appendChild(toolIdSpan);
+                    toolsList.appendChild(toolItem);
+                });
+
+                toolsLabel.appendChild(toolsList);
+                toolsSection.appendChild(toolsLabel);
+                associatedDiv.appendChild(toolsSection);
+            }
+
+            // Resources section
+            if (
+                server.associatedResources &&
+                server.associatedResources.length > 0
+            ) {
+                const resourcesSection = document.createElement("div");
+                resourcesSection.className = "mt-3";
+
+                const resourcesLabel = document.createElement("p");
+                const resourcesStrong = document.createElement("strong");
+                resourcesStrong.textContent = "Resources: ";
+                resourcesLabel.appendChild(resourcesStrong);
+
+                const resourcesList = document.createElement("div");
+                resourcesList.className = "mt-1 space-y-1";
+
+                server.associatedResources.forEach((resourceId) => {
+                    const resourceItem = document.createElement("div");
+                    resourceItem.className = "flex items-center space-x-2";
+
+                    const resourceBadge = document.createElement("span");
+                    resourceBadge.className =
+                        "inline-block bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full dark:bg-blue-900 dark:text-blue-200";
+                    resourceBadge.textContent =
+                        window.resourceMapping &&
+                        window.resourceMapping[resourceId]
+                            ? window.resourceMapping[resourceId]
+                            : `Resource ${resourceId}`;
+
+                    const resourceIdSpan = document.createElement("span");
+                    resourceIdSpan.className =
+                        "text-xs text-gray-500 dark:text-gray-400";
+                    resourceIdSpan.textContent = `(${resourceId})`;
+
+                    resourceItem.appendChild(resourceBadge);
+                    resourceItem.appendChild(resourceIdSpan);
+                    resourcesList.appendChild(resourceItem);
+                });
+
+                resourcesLabel.appendChild(resourcesList);
+                resourcesSection.appendChild(resourcesLabel);
+                associatedDiv.appendChild(resourcesSection);
+            }
+
+            // Prompts section
+            if (
+                server.associatedPrompts &&
+                server.associatedPrompts.length > 0
+            ) {
+                const promptsSection = document.createElement("div");
+                promptsSection.className = "mt-3";
+
+                const promptsLabel = document.createElement("p");
+                const promptsStrong = document.createElement("strong");
+                promptsStrong.textContent = "Prompts: ";
+                promptsLabel.appendChild(promptsStrong);
+
+                const promptsList = document.createElement("div");
+                promptsList.className = "mt-1 space-y-1";
+
+                server.associatedPrompts.forEach((promptId) => {
+                    const promptItem = document.createElement("div");
+                    promptItem.className = "flex items-center space-x-2";
+
+                    const promptBadge = document.createElement("span");
+                    promptBadge.className =
+                        "inline-block bg-purple-100 text-purple-800 text-xs px-2 py-1 rounded-full dark:bg-purple-900 dark:text-purple-200";
+                    promptBadge.textContent =
+                        window.promptMapping && window.promptMapping[promptId]
+                            ? window.promptMapping[promptId]
+                            : `Prompt ${promptId}`;
+
+                    const promptIdSpan = document.createElement("span");
+                    promptIdSpan.className =
+                        "text-xs text-gray-500 dark:text-gray-400";
+                    promptIdSpan.textContent = `(${promptId})`;
+
+                    promptItem.appendChild(promptBadge);
+                    promptItem.appendChild(promptIdSpan);
+                    promptsList.appendChild(promptItem);
+                });
+
+                promptsLabel.appendChild(promptsList);
+                promptsSection.appendChild(promptsLabel);
+                associatedDiv.appendChild(promptsSection);
+            }
+
+            // A2A Agents section
+            if (
+                server.associatedA2aAgents &&
+                server.associatedA2aAgents.length > 0
+            ) {
+                const agentsSection = document.createElement("div");
+                agentsSection.className = "mt-3";
+
+                const agentsLabel = document.createElement("p");
+                const agentsStrong = document.createElement("strong");
+                agentsStrong.textContent = "A2A Agents: ";
+                agentsLabel.appendChild(agentsStrong);
+
+                const agentsList = document.createElement("div");
+                agentsList.className = "mt-1 space-y-1";
+
+                server.associatedA2aAgents.forEach((agentId) => {
+                    const agentItem = document.createElement("div");
+                    agentItem.className = "flex items-center space-x-2";
+
+                    const agentBadge = document.createElement("span");
+                    agentBadge.className =
+                        "inline-block bg-orange-100 text-orange-800 text-xs px-2 py-1 rounded-full dark:bg-orange-900 dark:text-orange-200";
+                    agentBadge.textContent = `Agent ${agentId}`;
+
+                    const agentIdSpan = document.createElement("span");
+                    agentIdSpan.className =
+                        "text-xs text-gray-500 dark:text-gray-400";
+                    agentIdSpan.textContent = `(${agentId})`;
+
+                    agentItem.appendChild(agentBadge);
+                    agentItem.appendChild(agentIdSpan);
+                    agentsList.appendChild(agentItem);
+                });
+
+                agentsLabel.appendChild(agentsList);
+                agentsSection.appendChild(agentsLabel);
+                associatedDiv.appendChild(agentsSection);
+            }
+
+            // Show message if no associated items
+            if (
+                (!server.associatedTools ||
+                    server.associatedTools.length === 0) &&
+                (!server.associatedResources ||
+                    server.associatedResources.length === 0) &&
+                (!server.associatedPrompts ||
+                    server.associatedPrompts.length === 0) &&
+                (!server.associatedA2aAgents ||
+                    server.associatedA2aAgents.length === 0)
+            ) {
+                const noItemsP = document.createElement("p");
+                noItemsP.className =
+                    "mt-2 text-sm text-gray-500 dark:text-gray-400";
+                noItemsP.textContent =
+                    "No tools, resources, prompts, or A2A agents are currently associated with this server.";
+                associatedDiv.appendChild(noItemsP);
+            }
+
+            container.appendChild(associatedDiv);
 
             // Add metadata section
             const metadataDiv = document.createElement("div");
@@ -3445,31 +3771,45 @@ async function viewServer(serverId) {
             const metadataFields = [
                 {
                     label: "Created By",
-                    value: server.createdBy || "Legacy Entity",
+                    value: server.created_by || "Legacy Entity",
                 },
                 {
                     label: "Created At",
-                    value: server.createdAt
-                        ? new Date(server.createdAt).toLocaleString()
+                    value: server.created_at
+                        ? new Date(server.created_at).toLocaleString()
                         : "Pre-metadata",
                 },
                 {
-                    label: "Created From",
-                    value: server.createdFromIp || "Unknown",
+                    label: "Created From IP",
+                    value: server.created_from_ip || "Unknown",
                 },
-                { label: "Created Via", value: server.createdVia || "Unknown" },
+                {
+                    label: "Created Via",
+                    value: server.created_via || "Unknown",
+                },
                 {
                     label: "Last Modified By",
-                    value: server.modifiedBy || "N/A",
+                    value: server.modified_by || "N/A",
                 },
                 {
                     label: "Last Modified At",
-                    value: server.modifiedAt
-                        ? new Date(server.modifiedAt).toLocaleString()
+                    value: server.updated_at
+                        ? new Date(server.updated_at).toLocaleString()
                         : "N/A",
                 },
+                {
+                    label: "Modified From IP",
+                    value: server.modified_from_ip || "N/A",
+                },
+                {
+                    label: "Modified Via",
+                    value: server.modified_via || "N/A",
+                },
                 { label: "Version", value: server.version || "1" },
-                { label: "Import Batch", value: server.importBatchId || "N/A" },
+                {
+                    label: "Import Batch",
+                    value: server.import_batch_id || "N/A",
+                },
             ];
 
             metadataFields.forEach((field) => {
@@ -3524,20 +3864,49 @@ async function editServer(serverId) {
 
         const isInactiveCheckedBool = isInactiveChecked("servers");
         let hiddenField = safeGetElement("edit-server-show-inactive");
+        const editForm = safeGetElement("edit-server-form");
         if (!hiddenField) {
             hiddenField = document.createElement("input");
             hiddenField.type = "hidden";
             hiddenField.name = "is_inactive_checked";
             hiddenField.id = "edit-server-show-inactive";
-            const editForm = safeGetElement("edit-server-form");
+
             if (editForm) {
                 editForm.appendChild(hiddenField);
             }
         }
         hiddenField.value = isInactiveCheckedBool;
 
+        const visibility = server.visibility; // Ensure visibility is either 'public', 'team', or 'private'
+        const publicRadio = safeGetElement("edit-visibility-public");
+        const teamRadio = safeGetElement("edit-visibility-team");
+        const privateRadio = safeGetElement("edit-visibility-private");
+
+        // Prepopulate visibility radio buttons based on the server data
+        if (visibility) {
+            // Check visibility and set the corresponding radio button
+            if (visibility === "public" && publicRadio) {
+                publicRadio.checked = true;
+            } else if (visibility === "team" && teamRadio) {
+                teamRadio.checked = true;
+            } else if (visibility === "private" && privateRadio) {
+                privateRadio.checked = true;
+            }
+        }
+
+        const teamId = new URL(window.location.href).searchParams.get(
+            "team_id",
+        );
+
+        if (teamId) {
+            const hiddenInput = document.createElement("input");
+            hiddenInput.type = "hidden";
+            hiddenInput.name = "team_id";
+            hiddenInput.value = teamId;
+            editForm.appendChild(hiddenInput);
+        }
+
         // Set form action and populate fields with validation
-        const editForm = safeGetElement("edit-server-form");
         if (editForm) {
             editForm.action = `${window.ROOT_PATH}/admin/servers/${serverId}/edit`;
         }
@@ -3570,13 +3939,213 @@ async function editServer(serverId) {
             tagsField.value = server.tags ? server.tags.join(", ") : "";
         }
 
+        // Set icon field
+        const iconField = safeGetElement("edit-server-icon");
+        if (iconField) {
+            iconField.value = server.icon || "";
+        }
+
+        // Store server data for modal population
+        window.currentEditingServer = server;
+
         openModal("server-edit-modal");
+
+        // Use multiple approaches to ensure checkboxes get set
+        setEditServerAssociations(server);
+        setTimeout(() => setEditServerAssociations(server), 100);
+        setTimeout(() => setEditServerAssociations(server), 300);
+
+        // Set associated items after modal is opened
+        setTimeout(() => {
+            console.log("Setting associated items for server:", server.id);
+            console.log("Associated tools:", server.associatedTools);
+            console.log("Associated resources:", server.associatedResources);
+            console.log("Associated prompts:", server.associatedPrompts);
+
+            // Set associated tools checkboxes
+            const toolCheckboxes = document.querySelectorAll(
+                'input[name="associatedTools"]',
+            );
+            console.log("Found", toolCheckboxes.length, "tool checkboxes");
+
+            toolCheckboxes.forEach((checkbox) => {
+                const isChecked =
+                    server.associatedTools &&
+                    server.associatedTools.includes(checkbox.value);
+                console.log(
+                    `Tool ${checkbox.value}: ${isChecked ? "CHECKED" : "unchecked"}`,
+                );
+                checkbox.checked = isChecked;
+            });
+
+            // Set associated resources checkboxes
+            const resourceCheckboxes = document.querySelectorAll(
+                'input[name="associatedResources"]',
+            );
+            console.log(
+                "Found",
+                resourceCheckboxes.length,
+                "resource checkboxes",
+            );
+
+            resourceCheckboxes.forEach((checkbox) => {
+                const checkboxValue = parseInt(checkbox.value);
+                const isChecked =
+                    server.associatedResources &&
+                    server.associatedResources.includes(checkboxValue);
+                console.log(
+                    `Resource ${checkboxValue}: ${isChecked ? "CHECKED" : "unchecked"}`,
+                );
+                checkbox.checked = isChecked;
+            });
+
+            // Set associated prompts checkboxes
+            const promptCheckboxes = document.querySelectorAll(
+                'input[name="associatedPrompts"]',
+            );
+            console.log("Found", promptCheckboxes.length, "prompt checkboxes");
+
+            promptCheckboxes.forEach((checkbox) => {
+                const checkboxValue = parseInt(checkbox.value);
+                const isChecked =
+                    server.associatedPrompts &&
+                    server.associatedPrompts.includes(checkboxValue);
+                console.log(
+                    `Prompt ${checkboxValue}: ${isChecked ? "CHECKED" : "unchecked"}`,
+                );
+                checkbox.checked = isChecked;
+            });
+
+            // Manually trigger the selector update functions to refresh pills
+            setTimeout(() => {
+                // Find and trigger existing tool selector update
+                const toolContainer =
+                    document.getElementById("edit-server-tools");
+                if (toolContainer) {
+                    const firstToolCheckbox = toolContainer.querySelector(
+                        'input[type="checkbox"]',
+                    );
+                    if (firstToolCheckbox) {
+                        const changeEvent = new Event("change", {
+                            bubbles: true,
+                        });
+                        firstToolCheckbox.dispatchEvent(changeEvent);
+                    }
+                }
+
+                // Trigger resource selector update
+                const resourceContainer = document.getElementById(
+                    "edit-server-resources",
+                );
+                if (resourceContainer) {
+                    const firstResourceCheckbox =
+                        resourceContainer.querySelector(
+                            'input[type="checkbox"]',
+                        );
+                    if (firstResourceCheckbox) {
+                        const changeEvent = new Event("change", {
+                            bubbles: true,
+                        });
+                        firstResourceCheckbox.dispatchEvent(changeEvent);
+                    }
+                }
+
+                // Trigger prompt selector update
+                const promptContainer = document.getElementById(
+                    "edit-server-prompts",
+                );
+                if (promptContainer) {
+                    const firstPromptCheckbox = promptContainer.querySelector(
+                        'input[type="checkbox"]',
+                    );
+                    if (firstPromptCheckbox) {
+                        const changeEvent = new Event("change", {
+                            bubbles: true,
+                        });
+                        firstPromptCheckbox.dispatchEvent(changeEvent);
+                    }
+                }
+            }, 50);
+        }, 200);
+
         console.log("✓ Server edit modal loaded successfully");
     } catch (error) {
         console.error("Error fetching server for editing:", error);
         const errorMessage = handleFetchError(error, "load server for editing");
         showErrorMessage(errorMessage);
     }
+}
+
+// Helper function to set edit server associations
+function setEditServerAssociations(server) {
+    // Set associated tools checkboxes
+    const toolCheckboxes = document.querySelectorAll(
+        'input[name="associatedTools"]',
+    );
+
+    if (toolCheckboxes.length === 0) {
+        return;
+    }
+
+    toolCheckboxes.forEach((checkbox) => {
+        let isChecked = false;
+        if (server.associatedTools && window.toolMapping) {
+            // Get the tool name for this checkbox UUID
+            const toolName = window.toolMapping[checkbox.value];
+
+            // Check if this tool name is in the associated tools array
+            isChecked = toolName && server.associatedTools.includes(toolName);
+        }
+
+        checkbox.checked = isChecked;
+    });
+
+    // Set associated resources checkboxes
+    const resourceCheckboxes = document.querySelectorAll(
+        'input[name="associatedResources"]',
+    );
+
+    resourceCheckboxes.forEach((checkbox) => {
+        const checkboxValue = parseInt(checkbox.value);
+        const isChecked =
+            server.associatedResources &&
+            server.associatedResources.includes(checkboxValue);
+        checkbox.checked = isChecked;
+    });
+
+    // Set associated prompts checkboxes
+    const promptCheckboxes = document.querySelectorAll(
+        'input[name="associatedPrompts"]',
+    );
+
+    promptCheckboxes.forEach((checkbox) => {
+        const checkboxValue = parseInt(checkbox.value);
+        const isChecked =
+            server.associatedPrompts &&
+            server.associatedPrompts.includes(checkboxValue);
+        checkbox.checked = isChecked;
+    });
+
+    // Force update the pill displays by triggering change events
+    setTimeout(() => {
+        const allCheckboxes = [
+            ...document.querySelectorAll(
+                '#edit-server-tools input[type="checkbox"]',
+            ),
+            ...document.querySelectorAll(
+                '#edit-server-resources input[type="checkbox"]',
+            ),
+            ...document.querySelectorAll(
+                '#edit-server-prompts input[type="checkbox"]',
+            ),
+        ];
+
+        allCheckboxes.forEach((checkbox) => {
+            if (checkbox.checked) {
+                checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        });
+    }, 50);
 }
 
 // ===================================================================
@@ -3651,12 +4220,51 @@ function showTab(tabName) {
                     }
                 }
 
+                if (tabName === "teams") {
+                    // Load Teams list if not already loaded
+                    const teamsList = safeGetElement("teams-list");
+                    if (teamsList) {
+                        // Check if it's still showing the loading message or is empty
+                        const hasLoadingMessage =
+                            teamsList.innerHTML.includes("Loading teams...");
+                        const isEmpty = teamsList.innerHTML.trim() === "";
+                        if (hasLoadingMessage || isEmpty) {
+                            // Trigger HTMX load manually if HTMX is available
+                            if (window.htmx && window.htmx.trigger) {
+                                window.htmx.trigger(teamsList, "load");
+                            }
+                        }
+                    }
+                }
+
+                if (tabName === "tokens") {
+                    // Load Tokens list and set up form handling
+                    const tokensList = safeGetElement("tokens-list");
+                    if (tokensList) {
+                        const hasLoadingMessage =
+                            tokensList.innerHTML.includes("Loading tokens...");
+                        const isEmpty = tokensList.innerHTML.trim() === "";
+                        if (hasLoadingMessage || isEmpty) {
+                            loadTokensList();
+                        }
+                    }
+
+                    // Set up create token form if not already set up
+                    const createForm = safeGetElement("create-token-form");
+                    if (createForm && !createForm.hasAttribute("data-setup")) {
+                        setupCreateTokenForm();
+                        createForm.setAttribute("data-setup", "true");
+                    }
+                }
+
                 if (tabName === "a2a-agents") {
                     // Load A2A agents list if not already loaded
                     const agentsList = safeGetElement("a2a-agents-list");
                     if (agentsList && agentsList.innerHTML.trim() === "") {
-                        // Trigger HTMX load manually
-                        window.htmx.trigger(agentsList, "load");
+                        // Trigger HTMX load manually if HTMX is available
+                        if (window.htmx && window.htmx.trigger) {
+                            window.htmx.trigger(agentsList, "load");
+                        }
                     }
                 }
 
@@ -3666,7 +4274,7 @@ function showTab(tabName) {
                         fetchWithTimeout(
                             `${window.ROOT_PATH}/version?partial=true`,
                             {},
-                            10000,
+                            window.MCPGATEWAY_UI_TOOL_TEST_TIMEOUT || 60000,
                         )
                             .then((resp) => {
                                 if (!resp.ok) {
@@ -3713,6 +4321,30 @@ function showTab(tabName) {
                         } catch (error) {
                             console.error(
                                 "Error loading export/import content:",
+                                error,
+                            );
+                        }
+                    }
+                }
+
+                if (tabName === "permissions") {
+                    // Initialize permissions panel when tab is shown
+                    if (!panel.classList.contains("hidden")) {
+                        console.log("🔄 Initializing permissions tab content");
+                        try {
+                            // Check if initializePermissionsPanel function exists
+                            if (
+                                typeof initializePermissionsPanel === "function"
+                            ) {
+                                initializePermissionsPanel();
+                            } else {
+                                console.warn(
+                                    "initializePermissionsPanel function not found",
+                                );
+                            }
+                        } catch (error) {
+                            console.error(
+                                "Error initializing permissions panel:",
                                 error,
                             );
                         }
@@ -4233,6 +4865,144 @@ function initToolSelect(
     checkboxes.forEach((cb) => cb.addEventListener("change", update));
 }
 
+function initResourceSelect(
+    selectId,
+    pillsId,
+    warnId,
+    max = 10,
+    selectBtnId = null,
+    clearBtnId = null,
+) {
+    const container = document.getElementById(selectId);
+    const pillsBox = document.getElementById(pillsId);
+    const warnBox = document.getElementById(warnId);
+    const clearBtn = clearBtnId ? document.getElementById(clearBtnId) : null;
+    const selectBtn = selectBtnId ? document.getElementById(selectBtnId) : null;
+
+    if (!container || !pillsBox || !warnBox) {
+        console.warn(
+            `Resource select elements not found: ${selectId}, ${pillsId}, ${warnId}`,
+        );
+        return;
+    }
+
+    const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+    const pillClasses =
+        "inline-block px-3 py-1 text-xs font-semibold text-blue-700 bg-blue-100 rounded-full shadow dark:text-blue-300 dark:bg-blue-900";
+
+    function update() {
+        try {
+            const checked = Array.from(checkboxes).filter((cb) => cb.checked);
+            const count = checked.length;
+
+            // Rebuild pills safely
+            pillsBox.innerHTML = "";
+            checked.forEach((cb) => {
+                const span = document.createElement("span");
+                span.className = pillClasses;
+                span.textContent =
+                    cb.nextElementSibling?.textContent?.trim() || "Unnamed";
+                pillsBox.appendChild(span);
+            });
+
+            // Warning when > max
+            if (count > max) {
+                warnBox.textContent = `Selected ${count} resources. Selecting more than ${max} resources can degrade agent performance with the server.`;
+            } else {
+                warnBox.textContent = "";
+            }
+        } catch (error) {
+            console.error("Error updating resource select:", error);
+        }
+    }
+
+    if (clearBtn) {
+        clearBtn.addEventListener("click", () => {
+            checkboxes.forEach((cb) => (cb.checked = false));
+            update();
+        });
+    }
+
+    if (selectBtn) {
+        selectBtn.addEventListener("click", () => {
+            checkboxes.forEach((cb) => (cb.checked = true));
+            update();
+        });
+    }
+
+    update(); // Initial render
+    checkboxes.forEach((cb) => cb.addEventListener("change", update));
+}
+
+function initPromptSelect(
+    selectId,
+    pillsId,
+    warnId,
+    max = 8,
+    selectBtnId = null,
+    clearBtnId = null,
+) {
+    const container = document.getElementById(selectId);
+    const pillsBox = document.getElementById(pillsId);
+    const warnBox = document.getElementById(warnId);
+    const clearBtn = clearBtnId ? document.getElementById(clearBtnId) : null;
+    const selectBtn = selectBtnId ? document.getElementById(selectBtnId) : null;
+
+    if (!container || !pillsBox || !warnBox) {
+        console.warn(
+            `Prompt select elements not found: ${selectId}, ${pillsId}, ${warnId}`,
+        );
+        return;
+    }
+
+    const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+    const pillClasses =
+        "inline-block px-3 py-1 text-xs font-semibold text-purple-700 bg-purple-100 rounded-full shadow dark:text-purple-300 dark:bg-purple-900";
+
+    function update() {
+        try {
+            const checked = Array.from(checkboxes).filter((cb) => cb.checked);
+            const count = checked.length;
+
+            // Rebuild pills safely
+            pillsBox.innerHTML = "";
+            checked.forEach((cb) => {
+                const span = document.createElement("span");
+                span.className = pillClasses;
+                span.textContent =
+                    cb.nextElementSibling?.textContent?.trim() || "Unnamed";
+                pillsBox.appendChild(span);
+            });
+
+            // Warning when > max
+            if (count > max) {
+                warnBox.textContent = `Selected ${count} prompts. Selecting more than ${max} prompts can degrade agent performance with the server.`;
+            } else {
+                warnBox.textContent = "";
+            }
+        } catch (error) {
+            console.error("Error updating prompt select:", error);
+        }
+    }
+
+    if (clearBtn) {
+        clearBtn.addEventListener("click", () => {
+            checkboxes.forEach((cb) => (cb.checked = false));
+            update();
+        });
+    }
+
+    if (selectBtn) {
+        selectBtn.addEventListener("click", () => {
+            checkboxes.forEach((cb) => (cb.checked = true));
+            update();
+        });
+    }
+
+    update(); // Initial render
+    checkboxes.forEach((cb) => cb.addEventListener("change", update));
+}
+
 // ===================================================================
 // INACTIVE ITEMS HANDLING
 // ===================================================================
@@ -4287,7 +5057,7 @@ const toolTestState = {
     activeRequests: new Map(), // toolId -> AbortController
     lastRequestTime: new Map(), // toolId -> timestamp
     debounceDelay: 1000, // Increased from 500ms
-    requestTimeout: 30000, // Increased from 10000ms
+    requestTimeout: window.MCPGATEWAY_UI_TOOL_TEST_TIMEOUT || 60000, // Use configurable timeout
 };
 
 let toolInputSchemaRegistry = null;
@@ -4405,7 +5175,8 @@ async function testTool(toolId) {
         }
         if (descElement) {
             if (tool.description) {
-                descElement.innerHTML = tool.description.replace(
+                // Escape HTML and then replace newlines with <br/> tags
+                descElement.innerHTML = escapeHtml(tool.description).replace(
                     /\n/g,
                     "<br/>",
                 );
@@ -4529,6 +5300,15 @@ async function testTool(toolId) {
                         });
 
                         wrapper.appendChild(input);
+
+                        if (itemTypes.includes("boolean")) {
+                            const hidden = document.createElement("input");
+                            hidden.type = "hidden";
+                            hidden.name = keyValidation.value;
+                            hidden.value = "false";
+                            wrapper.appendChild(hidden);
+                        }
+
                         wrapper.appendChild(delBtn);
                         return wrapper;
                     }
@@ -4572,6 +5352,7 @@ async function testTool(toolId) {
                             fieldInput.type = "number";
                         } else if (prop.type === "boolean") {
                             fieldInput.type = "checkbox";
+                            fieldInput.value = "true";
                         } else {
                             fieldInput = document.createElement("textarea");
                             fieldInput.rows = 1;
@@ -4598,6 +5379,15 @@ async function testTool(toolId) {
                     }
 
                     fieldDiv.appendChild(fieldInput);
+                    if (prop.default !== undefined) {
+                        if (fieldInput.type === "checkbox") {
+                            const hiddenInput = document.createElement("input");
+                            hiddenInput.type = "hidden";
+                            hiddenInput.value = "false";
+                            hiddenInput.name = keyValidation.value;
+                            fieldDiv.appendChild(hiddenInput);
+                        }
+                    }
                 }
 
                 container.appendChild(fieldDiv);
@@ -4804,6 +5594,10 @@ async function runToolTest() {
             "Content-Type": "application/json",
         };
 
+        // Authentication will be handled automatically by the JWT cookie
+        // that was set when the admin UI loaded. The 'credentials: "include"'
+        // in the fetch request ensures the cookie is sent with the request.
+
         const passthroughHeadersField = document.getElementById(
             "test-passthrough-headers",
         );
@@ -4857,7 +5651,7 @@ async function runToolTest() {
                 body: JSON.stringify(payload),
                 credentials: "include",
             },
-            20000, // Increased from 8000
+            window.MCPGATEWAY_UI_TOOL_TEST_TIMEOUT || 60000, // Use configurable timeout
         );
 
         const result = await response.json();
@@ -4978,6 +5772,382 @@ function cleanupToolTestModal() {
         console.log("✓ Tool test modal cleaned up");
     } catch (error) {
         console.error("Error cleaning up tool test modal:", error);
+    }
+}
+
+// ===================================================================
+// PROMPT TEST FUNCTIONALITY
+// ===================================================================
+
+// State management for prompt testing
+const promptTestState = {
+    lastRequestTime: new Map(),
+    activeRequests: new Set(),
+    currentTestPrompt: null,
+};
+
+/**
+ * Test a prompt by opening the prompt test modal
+ */
+async function testPrompt(promptName) {
+    try {
+        console.log(`Testing prompt: ${promptName}`);
+
+        // Debouncing to prevent rapid clicking
+        const now = Date.now();
+        const lastRequest =
+            promptTestState.lastRequestTime.get(promptName) || 0;
+        const timeSinceLastRequest = now - lastRequest;
+        const debounceDelay = 1000;
+
+        if (timeSinceLastRequest < debounceDelay) {
+            console.log(`Prompt ${promptName} test request debounced`);
+            return;
+        }
+
+        // Check if modal is already active
+        if (AppState.isModalActive("prompt-test-modal")) {
+            console.warn("Prompt test modal is already active");
+            return;
+        }
+
+        // Update button state
+        const testButton = document.querySelector(
+            `[onclick*="testPrompt('${promptName}')"]`,
+        );
+        if (testButton) {
+            if (testButton.disabled) {
+                console.log(
+                    "Test button already disabled, request in progress",
+                );
+                return;
+            }
+            testButton.disabled = true;
+            testButton.textContent = "Loading...";
+            testButton.classList.add("opacity-50", "cursor-not-allowed");
+        }
+
+        // Record request time and mark as active
+        promptTestState.lastRequestTime.set(promptName, now);
+        promptTestState.activeRequests.add(promptName);
+
+        // Fetch prompt details
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+        try {
+            // Fetch prompt details from the prompts endpoint (view mode)
+            const response = await fetch(
+                `${window.ROOT_PATH}/admin/prompts/${encodeURIComponent(promptName)}`,
+                {
+                    method: "GET",
+                    headers: {
+                        Accept: "application/json",
+                    },
+                    credentials: "include",
+                    signal: controller.signal,
+                },
+            );
+
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                throw new Error(
+                    `Failed to fetch prompt details: ${response.status} ${response.statusText}`,
+                );
+            }
+
+            const prompt = await response.json();
+            promptTestState.currentTestPrompt = prompt;
+
+            // Set modal title and description
+            const titleElement = safeGetElement("prompt-test-modal-title");
+            const descElement = safeGetElement("prompt-test-modal-description");
+
+            if (titleElement) {
+                titleElement.textContent = `Test Prompt: ${prompt.name || promptName}`;
+            }
+            if (descElement) {
+                if (prompt.description) {
+                    // Escape HTML and then replace newlines with <br/> tags
+                    descElement.innerHTML = escapeHtml(
+                        prompt.description,
+                    ).replace(/\n/g, "<br/>");
+                } else {
+                    descElement.textContent = "No description available.";
+                }
+            }
+
+            // Build form fields based on prompt arguments
+            buildPromptTestForm(prompt);
+
+            // Open the modal
+            openModal("prompt-test-modal");
+        } catch (error) {
+            clearTimeout(timeoutId);
+
+            if (error.name === "AbortError") {
+                console.warn("Request was cancelled (timeout or user action)");
+                showErrorMessage("Request timed out. Please try again.");
+            } else {
+                console.error("Error fetching prompt details:", error);
+                const errorMessage =
+                    error.message || "Failed to load prompt details";
+                showErrorMessage(`Error testing prompt: ${errorMessage}`);
+            }
+        }
+    } catch (error) {
+        console.error("Error in testPrompt:", error);
+        showErrorMessage(`Error testing prompt: ${error.message}`);
+    } finally {
+        // Always restore button state
+        const testButton = document.querySelector(
+            `[onclick*="testPrompt('${promptName}')"]`,
+        );
+        if (testButton) {
+            testButton.disabled = false;
+            testButton.textContent = "Test";
+            testButton.classList.remove("opacity-50", "cursor-not-allowed");
+        }
+
+        // Clean up state
+        promptTestState.activeRequests.delete(promptName);
+    }
+}
+
+/**
+ * Build the form fields for prompt testing based on prompt arguments
+ */
+function buildPromptTestForm(prompt) {
+    const fieldsContainer = safeGetElement("prompt-test-form-fields");
+    if (!fieldsContainer) {
+        console.error("Prompt test form fields container not found");
+        return;
+    }
+
+    // Clear existing fields
+    fieldsContainer.innerHTML = "";
+
+    if (!prompt.arguments || prompt.arguments.length === 0) {
+        fieldsContainer.innerHTML = `
+            <div class="text-gray-500 dark:text-gray-400 text-sm italic">
+                This prompt has no arguments - it will render as-is.
+            </div>
+        `;
+        return;
+    }
+
+    // Create fields for each prompt argument
+    prompt.arguments.forEach((arg, index) => {
+        const fieldDiv = document.createElement("div");
+        fieldDiv.className = "space-y-2";
+
+        const label = document.createElement("label");
+        label.className =
+            "block text-sm font-medium text-gray-700 dark:text-gray-300";
+        label.textContent = `${arg.name}${arg.required ? " *" : ""}`;
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.id = `prompt-arg-${index}`;
+        input.name = `arg-${arg.name}`;
+        input.className =
+            "mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300";
+
+        if (arg.description) {
+            input.placeholder = arg.description;
+        }
+
+        if (arg.required) {
+            input.required = true;
+        }
+
+        fieldDiv.appendChild(label);
+        if (arg.description) {
+            const description = document.createElement("div");
+            description.className = "text-xs text-gray-500 dark:text-gray-400";
+            description.textContent = arg.description;
+            fieldDiv.appendChild(description);
+        }
+        fieldDiv.appendChild(input);
+
+        fieldsContainer.appendChild(fieldDiv);
+    });
+}
+
+/**
+ * Run the prompt test by calling the API with the provided arguments
+ */
+async function runPromptTest() {
+    const form = safeGetElement("prompt-test-form");
+    const loadingElement = safeGetElement("prompt-test-loading");
+    const resultContainer = safeGetElement("prompt-test-result");
+    const runButton = document.querySelector(
+        'button[onclick="runPromptTest()"]',
+    );
+
+    if (!form || !promptTestState.currentTestPrompt) {
+        console.error("Prompt test form or current prompt not found");
+        showErrorMessage("Prompt test form not available");
+        return;
+    }
+
+    // Prevent multiple concurrent test runs
+    if (runButton && runButton.disabled) {
+        console.log("Prompt test already running");
+        return;
+    }
+
+    try {
+        // Disable button and show loading
+        if (runButton) {
+            runButton.disabled = true;
+            runButton.textContent = "Rendering...";
+        }
+        if (loadingElement) {
+            loadingElement.classList.remove("hidden");
+        }
+        if (resultContainer) {
+            resultContainer.innerHTML = `
+                <div class="text-gray-500 dark:text-gray-400 text-sm italic">
+                    Rendering prompt...
+                </div>
+            `;
+        }
+
+        // Collect form data (prompt arguments)
+        const formData = new FormData(form);
+        const args = {};
+
+        // Parse the form data into arguments object
+        for (const [key, value] of formData.entries()) {
+            if (key.startsWith("arg-")) {
+                const argName = key.substring(4); // Remove 'arg-' prefix
+                args[argName] = value;
+            }
+        }
+
+        // Call the prompt API endpoint
+        const response = await fetch(
+            `${window.ROOT_PATH}/prompts/${encodeURIComponent(promptTestState.currentTestPrompt.name)}`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                credentials: "include",
+                body: JSON.stringify(args),
+            },
+        );
+
+        if (!response.ok) {
+            let errorMessage;
+            try {
+                const errorData = await response.json();
+                errorMessage =
+                    errorData.message ||
+                    `HTTP ${response.status}: ${response.statusText}`;
+
+                // Show more detailed error information
+                if (errorData.details) {
+                    errorMessage += `\nDetails: ${errorData.details}`;
+                }
+            } catch {
+                errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+            }
+            throw new Error(errorMessage);
+        }
+
+        const result = await response.json();
+
+        // Display the result
+        if (resultContainer) {
+            let resultHtml = "";
+
+            if (result.messages && Array.isArray(result.messages)) {
+                result.messages.forEach((message, index) => {
+                    resultHtml += `
+                        <div class="mb-4 p-3 bg-white dark:bg-gray-700 rounded border">
+                            <div class="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">
+                                Message ${index + 1} (${message.role || "unknown"})
+                            </div>
+                            <div class="text-gray-900 dark:text-gray-100 whitespace-pre-wrap">${escapeHtml(message.content?.text || JSON.stringify(message.content) || "")}</div>
+                        </div>
+                    `;
+                });
+            } else {
+                resultHtml = `
+                    <div class="text-gray-900 dark:text-gray-100 whitespace-pre-wrap">${escapeHtml(JSON.stringify(result, null, 2))}</div>
+                `;
+            }
+
+            resultContainer.innerHTML = resultHtml;
+        }
+
+        console.log("Prompt rendered successfully");
+    } catch (error) {
+        console.error("Error rendering prompt:", error);
+
+        if (resultContainer) {
+            resultContainer.innerHTML = `
+                <div class="text-red-600 dark:text-red-400 text-sm">
+                    <strong>Error:</strong> ${escapeHtml(error.message)}
+                </div>
+            `;
+        }
+
+        showErrorMessage(`Failed to render prompt: ${error.message}`);
+    } finally {
+        // Hide loading and restore button
+        if (loadingElement) {
+            loadingElement.classList.add("hidden");
+        }
+        if (runButton) {
+            runButton.disabled = false;
+            runButton.textContent = "Render Prompt";
+        }
+    }
+}
+
+/**
+ * Clean up prompt test modal state
+ */
+function cleanupPromptTestModal() {
+    try {
+        // Clear current test prompt
+        promptTestState.currentTestPrompt = null;
+
+        // Reset form
+        const form = safeGetElement("prompt-test-form");
+        if (form) {
+            form.reset();
+        }
+
+        // Clear form fields
+        const fieldsContainer = safeGetElement("prompt-test-form-fields");
+        if (fieldsContainer) {
+            fieldsContainer.innerHTML = "";
+        }
+
+        // Clear result container
+        const resultContainer = safeGetElement("prompt-test-result");
+        if (resultContainer) {
+            resultContainer.innerHTML = `
+                <div class="text-gray-500 dark:text-gray-400 text-sm italic">
+                    Click "Render Prompt" to see the rendered output
+                </div>
+            `;
+        }
+
+        // Hide loading
+        const loadingElement = safeGetElement("prompt-test-loading");
+        if (loadingElement) {
+            loadingElement.classList.add("hidden");
+        }
+
+        console.log("✓ Prompt test modal cleaned up");
+    } catch (error) {
+        console.error("Error cleaning up prompt test modal:", error);
     }
 }
 
@@ -5323,7 +6493,7 @@ async function viewTool(toolId) {
         } else {
             authHTML = `
         <span class="font-medium text-gray-700 dark:text-gray-300">Authentication Type:</span>
-        <div class="mt-1 text-sm text-gray-600 dark:text-gray-400">None</div>
+        <div class="mt-1 text-sm">None</div>
       `;
         }
 
@@ -5399,7 +6569,7 @@ async function viewTool(toolId) {
         if (toolDetailsDiv) {
             // Create structure safely without double-escaping
             const safeHTML = `
-        <div class="dark:bg-gray-800 dark:text-gray-300">
+        <div class="bg-transparent dark:bg-transparent dark:text-gray-300">
           <!-- Two Column Layout for Main Info -->
           <div class="grid grid-cols-2 gap-6 mb-6">
             <!-- Left Column -->
@@ -5410,11 +6580,11 @@ async function viewTool(toolId) {
               </div>
               <div>
                 <span class="font-medium text-gray-700 dark:text-gray-300">Technical Name:</span>
-                <div class="mt-1 tool-name text-sm text-gray-600 dark:text-gray-400"></div>
+                <div class="mt-1 tool-name text-sm"></div>
               </div>
               <div>
                 <span class="font-medium text-gray-700 dark:text-gray-300">URL:</span>
-                <div class="mt-1 tool-url text-sm text-gray-600 dark:text-gray-400 break-all"></div>
+                <div class="mt-1 tool-url text-sm"></div>
               </div>
               <div>
                 <span class="font-medium text-gray-700 dark:text-gray-300">Type:</span>
@@ -5425,7 +6595,7 @@ async function viewTool(toolId) {
             <div class="space-y-3">
               <div>
                 <span class="font-medium text-gray-700 dark:text-gray-300">Description:</span>
-                <div class="mt-1 tool-description text-sm text-gray-600 dark:text-gray-400"></div>
+                <div class="mt-1 tool-description text-sm"></div>
               </div>
               <div>
                 <span class="font-medium text-gray-700 dark:text-gray-300">Tags:</span>
@@ -5567,7 +6737,7 @@ async function viewTool(toolId) {
                     tagsElement.innerHTML = tool.tags
                         .map(
                             (tag) =>
-                                `<span class="inline-block bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full mr-1 mb-1 dark:bg-blue-900 dark:text-blue-200">${tag}</span>`,
+                                `<span class="inline-block bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full mr-1 mb-1 dark:bg-blue-900 dark:text-blue-200">${escapeHtml(tag)}</span>`,
                         )
                         .join("");
                 } else {
@@ -5841,21 +7011,36 @@ async function handleGatewayFormSubmit(e) {
             formData.append("oauth_config", JSON.stringify(oauthConfig));
         }
 
-        const response = await fetchWithTimeout(
-            `${window.ROOT_PATH}/admin/gateways`,
-            {
-                method: "POST",
-                body: formData,
-            },
+        formData.append("visibility", formData.get("visibility"));
+
+        const teamId = new URL(window.location.href).searchParams.get(
+            "team_id",
         );
+        teamId && formData.append("team_id", teamId);
+
+        const response = await fetch(`${window.ROOT_PATH}/admin/gateways`, {
+            method: "POST",
+            body: formData,
+        });
         const result = await response.json();
 
         if (!result || !result.success) {
             throw new Error(result?.message || "Failed to add gateway");
         } else {
-            const redirectUrl = isInactiveCheckedBool
-                ? `${window.ROOT_PATH}/admin?include_inactive=true#gateways`
-                : `${window.ROOT_PATH}/admin#gateways`;
+            const teamId = new URL(window.location.href).searchParams.get(
+                "team_id",
+            );
+            const searchParams = new URLSearchParams();
+            if (isInactiveCheckedBool) {
+                searchParams.set("include_inactive", "true");
+            }
+            if (teamId) {
+                searchParams.set("team_id", teamId);
+            }
+
+            const queryString = searchParams.toString();
+            const redirectUrl = `${window.ROOT_PATH}/admin${queryString ? `?${queryString}` : ""}#gateways`;
+
             window.location.href = redirectUrl;
         }
     } catch (error) {
@@ -5905,20 +7090,27 @@ async function handleResourceFormSubmit(e) {
         const isInactiveCheckedBool = isInactiveChecked("resources");
         formData.append("is_inactive_checked", isInactiveCheckedBool);
 
-        const response = await fetchWithTimeout(
-            `${window.ROOT_PATH}/admin/resources`,
-            {
-                method: "POST",
-                body: formData,
-            },
-        );
+        const response = await fetch(`${window.ROOT_PATH}/admin/resources`, {
+            method: "POST",
+            body: formData,
+        });
         const result = await response.json();
         if (!result || !result.success) {
             throw new Error(result?.message || "Failed to add Resource");
         } else {
-            const redirectUrl = isInactiveCheckedBool
-                ? `${window.ROOT_PATH}/admin?include_inactive=true#resources`
-                : `${window.ROOT_PATH}/admin#resources`;
+            const teamId = new URL(window.location.href).searchParams.get(
+                "team_id",
+            );
+
+            const searchParams = new URLSearchParams();
+            if (isInactiveCheckedBool) {
+                searchParams.set("include_inactive", "true");
+            }
+            if (teamId) {
+                searchParams.set("team_id", teamId);
+            }
+            const queryString = searchParams.toString();
+            const redirectUrl = `${window.ROOT_PATH}/admin${queryString ? `?${queryString}` : ""}#resources`;
             window.location.href = redirectUrl;
         }
     } catch (error) {
@@ -5963,21 +7155,28 @@ async function handlePromptFormSubmit(e) {
         const isInactiveCheckedBool = isInactiveChecked("prompts");
         formData.append("is_inactive_checked", isInactiveCheckedBool);
 
-        const response = await fetchWithTimeout(
-            `${window.ROOT_PATH}/admin/prompts`,
-            {
-                method: "POST",
-                body: formData,
-            },
-        );
+        const response = await fetch(`${window.ROOT_PATH}/admin/prompts`, {
+            method: "POST",
+            body: formData,
+        });
         const result = await response.json();
         if (!result || !result.success) {
             throw new Error(result?.message || "Failed to add prompt");
         }
         // Only redirect on success
-        const redirectUrl = isInactiveCheckedBool
-            ? `${window.ROOT_PATH}/admin?include_inactive=true#prompts`
-            : `${window.ROOT_PATH}/admin#prompts`;
+        const teamId = new URL(window.location.href).searchParams.get(
+            "team_id",
+        );
+
+        const searchParams = new URLSearchParams();
+        if (isInactiveCheckedBool) {
+            searchParams.set("include_inactive", "true");
+        }
+        if (teamId) {
+            searchParams.set("team_id", teamId);
+        }
+        const queryString = searchParams.toString();
+        const redirectUrl = `${window.ROOT_PATH}/admin${queryString ? `?${queryString}` : ""}#prompts`;
         window.location.href = redirectUrl;
     } catch (error) {
         console.error("Error:", error);
@@ -6030,9 +7229,19 @@ async function handleEditPromptFormSubmit(e) {
             throw new Error(result?.message || "Failed to edit Prompt");
         }
         // Only redirect on success
-        const redirectUrl = isInactiveCheckedBool
-            ? `${window.ROOT_PATH}/admin?include_inactive=true#prompts`
-            : `${window.ROOT_PATH}/admin#prompts`;
+        const teamId = new URL(window.location.href).searchParams.get(
+            "team_id",
+        );
+
+        const searchParams = new URLSearchParams();
+        if (isInactiveCheckedBool) {
+            searchParams.set("include_inactive", "true");
+        }
+        if (teamId) {
+            searchParams.set("team_id", teamId);
+        }
+        const queryString = searchParams.toString();
+        const redirectUrl = `${window.ROOT_PATH}/admin${queryString ? `?${queryString}` : ""}#prompts`;
         window.location.href = redirectUrl;
     } catch (error) {
         console.error("Error:", error);
@@ -6069,22 +7278,35 @@ async function handleServerFormSubmit(e) {
         const isInactiveCheckedBool = isInactiveChecked("servers");
         formData.append("is_inactive_checked", isInactiveCheckedBool);
 
-        const response = await fetchWithTimeout(
-            `${window.ROOT_PATH}/admin/servers`,
-            {
-                method: "POST",
-                body: formData,
-                redirect: "manual",
-            },
+        formData.append("visibility", formData.get("visibility"));
+        const teamId = new URL(window.location.href).searchParams.get(
+            "team_id",
         );
+        teamId && formData.append("team_id", teamId);
+
+        const response = await fetch(`${window.ROOT_PATH}/admin/servers`, {
+            method: "POST",
+            body: formData,
+        });
         const result = await response.json();
         if (!result || !result.success) {
             throw new Error(result?.message || "Failed to add server.");
         } else {
             // Success redirect
-            const redirectUrl = isInactiveCheckedBool
-                ? `${window.ROOT_PATH}/admin?include_inactive=true#catalog`
-                : `${window.ROOT_PATH}/admin#catalog`;
+            const teamId = new URL(window.location.href).searchParams.get(
+                "team_id",
+            );
+
+            const searchParams = new URLSearchParams();
+            if (isInactiveCheckedBool) {
+                searchParams.set("include_inactive", "true");
+            }
+            if (teamId) {
+                searchParams.set("team_id", teamId);
+            }
+
+            const queryString = searchParams.toString();
+            const redirectUrl = `${window.ROOT_PATH}/admin${queryString ? `?${queryString}` : ""}#catalog`;
             window.location.href = redirectUrl;
         }
     } catch (error) {
@@ -6152,20 +7374,33 @@ async function handleToolFormSubmit(event) {
         const isInactiveCheckedBool = isInactiveChecked("tools");
         formData.append("is_inactive_checked", isInactiveCheckedBool);
 
-        const response = await fetchWithTimeout(
-            `${window.ROOT_PATH}/admin/tools`,
-            {
-                method: "POST",
-                body: formData,
-            },
+        formData.append("visibility", formData.get("visibility"));
+        const teamId = new URL(window.location.href).searchParams.get(
+            "team_id",
         );
+        teamId && formData.append("team_id", teamId);
+
+        const response = await fetch(`${window.ROOT_PATH}/admin/tools`, {
+            method: "POST",
+            body: formData,
+        });
         const result = await response.json();
         if (!result || !result.success) {
             throw new Error(result?.message || "Failed to add tool");
         } else {
-            const redirectUrl = isInactiveCheckedBool
-                ? `${window.ROOT_PATH}/admin?include_inactive=true#tools`
-                : `${window.ROOT_PATH}/admin#tools`;
+            const teamId = new URL(window.location.href).searchParams.get(
+                "team_id",
+            );
+
+            const searchParams = new URLSearchParams();
+            if (isInactiveCheckedBool) {
+                searchParams.set("include_inactive", "true");
+            }
+            if (teamId) {
+                searchParams.set("team_id", teamId);
+            }
+            const queryString = searchParams.toString();
+            const redirectUrl = `${window.ROOT_PATH}/admin${queryString ? `?${queryString}` : ""}#tools`;
             window.location.href = redirectUrl;
         }
     } catch (error) {
@@ -6217,9 +7452,19 @@ async function handleEditToolFormSubmit(event) {
         if (!result || !result.success) {
             throw new Error(result?.message || "Failed to edit tool");
         } else {
-            const redirectUrl = isInactiveCheckedBool
-                ? `${window.ROOT_PATH}/admin?include_inactive=true#tools`
-                : `${window.ROOT_PATH}/admin#tools`;
+            const teamId = new URL(window.location.href).searchParams.get(
+                "team_id",
+            );
+
+            const searchParams = new URLSearchParams();
+            if (isInactiveCheckedBool) {
+                searchParams.set("include_inactive", "true");
+            }
+            if (teamId) {
+                searchParams.set("team_id", teamId);
+            }
+            const queryString = searchParams.toString();
+            const redirectUrl = `${window.ROOT_PATH}/admin${queryString ? `?${queryString}` : ""}#tools`;
             window.location.href = redirectUrl;
         }
     } catch (error) {
@@ -6318,9 +7563,19 @@ async function handleEditGatewayFormSubmit(e) {
             throw new Error(result?.message || "Failed to edit gateway");
         }
         // Only redirect on success
-        const redirectUrl = isInactiveCheckedBool
-            ? `${window.ROOT_PATH}/admin?include_inactive=true#gateways`
-            : `${window.ROOT_PATH}/admin#gateways`;
+        const teamId = new URL(window.location.href).searchParams.get(
+            "team_id",
+        );
+
+        const searchParams = new URLSearchParams();
+        if (isInactiveCheckedBool) {
+            searchParams.set("include_inactive", "true");
+        }
+        if (teamId) {
+            searchParams.set("team_id", teamId);
+        }
+        const queryString = searchParams.toString();
+        const redirectUrl = `${window.ROOT_PATH}/admin${queryString ? `?${queryString}` : ""}#gateways`;
         window.location.href = redirectUrl;
     } catch (error) {
         console.error("Error:", error);
@@ -6364,9 +7619,19 @@ async function handleEditServerFormSubmit(e) {
         // Only redirect on success
         else {
             // Redirect to the appropriate page based on inactivity checkbox
-            const redirectUrl = isInactiveCheckedBool
-                ? `${window.ROOT_PATH}/admin?include_inactive=true#catalog`
-                : `${window.ROOT_PATH}/admin#catalog`;
+            const teamId = new URL(window.location.href).searchParams.get(
+                "team_id",
+            );
+
+            const searchParams = new URLSearchParams();
+            if (isInactiveCheckedBool) {
+                searchParams.set("include_inactive", "true");
+            }
+            if (teamId) {
+                searchParams.set("team_id", teamId);
+            }
+            const queryString = searchParams.toString();
+            const redirectUrl = `${window.ROOT_PATH}/admin${queryString ? `?${queryString}` : ""}#catalog`;
             window.location.href = redirectUrl;
         }
     } catch (error) {
@@ -6420,9 +7685,19 @@ async function handleEditResFormSubmit(e) {
         // Only redirect on success
         else {
             // Redirect to the appropriate page based on inactivity checkbox
-            const redirectUrl = isInactiveCheckedBool
-                ? `${window.ROOT_PATH}/admin?include_inactive=true#resources`
-                : `${window.ROOT_PATH}/admin#resources`;
+            const teamId = new URL(window.location.href).searchParams.get(
+                "team_id",
+            );
+
+            const searchParams = new URLSearchParams();
+            if (isInactiveCheckedBool) {
+                searchParams.set("include_inactive", "true");
+            }
+            if (teamId) {
+                searchParams.set("team_id", teamId);
+            }
+            const queryString = searchParams.toString();
+            const redirectUrl = `${window.ROOT_PATH}/admin${queryString ? `?${queryString}` : ""}#resources`;
             window.location.href = redirectUrl;
         }
     } catch (error) {
@@ -6854,6 +8129,26 @@ function initializeToolSelects() {
         "selectAllEditToolsBtn",
         "clearAllEditToolsBtn",
     );
+
+    // Initialize resource selector
+    initResourceSelect(
+        "edit-server-resources",
+        "selectedEditResourcesPills",
+        "selectedEditResourcesWarning",
+        10,
+        "selectAllEditResourcesBtn",
+        "clearAllEditResourcesBtn",
+    );
+
+    // Initialize prompt selector
+    initPromptSelect(
+        "edit-server-prompts",
+        "selectedEditPromptsPills",
+        "selectedEditPromptsWarning",
+        8,
+        "selectAllEditPromptsBtn",
+        "clearAllEditPromptsBtn",
+    );
 }
 
 function initializeEventListeners() {
@@ -6883,7 +8178,11 @@ function setupTabNavigation() {
     ];
 
     tabs.forEach((tabName) => {
-        const tabElement = safeGetElement(`tab-${tabName}`);
+        // Suppress warnings for optional tabs that might not be enabled
+        const optionalTabs = ["roots", "logs", "export-import", "version-info"];
+        const suppressWarning = optionalTabs.includes(tabName);
+
+        const tabElement = safeGetElement(`tab-${tabName}`, suppressWarning);
         if (tabElement) {
             tabElement.addEventListener("click", () => showTab(tabName));
         }
@@ -7060,7 +8359,155 @@ function setupFormHandlers() {
             }
         });
     }
+
+    // Setup search functionality for selectors
+    setupSelectorSearch();
 }
+
+/**
+ * Setup search functionality for multi-select dropdowns
+ */
+function setupSelectorSearch() {
+    // Tools search
+    const searchTools = safeGetElement("searchTools", true);
+    if (searchTools) {
+        searchTools.addEventListener("input", function () {
+            filterSelectorItems(
+                this.value,
+                "#associatedTools",
+                ".tool-item",
+                "noToolsMessage",
+                "searchQuery",
+            );
+        });
+    }
+
+    // Resources search
+    const searchResources = safeGetElement("searchResources", true);
+    if (searchResources) {
+        searchResources.addEventListener("input", function () {
+            filterSelectorItems(
+                this.value,
+                "#associatedResources",
+                ".resource-item",
+                "noResourcesMessage",
+                "searchResourcesQuery",
+            );
+        });
+    }
+
+    // Prompts search
+    const searchPrompts = safeGetElement("searchPrompts", true);
+    if (searchPrompts) {
+        searchPrompts.addEventListener("input", function () {
+            filterSelectorItems(
+                this.value,
+                "#associatedPrompts",
+                ".prompt-item",
+                "noPromptsMessage",
+                "searchPromptsQuery",
+            );
+        });
+    }
+}
+
+/**
+ * Generic function to filter items in multi-select dropdowns with no results message
+ */
+function filterSelectorItems(
+    searchText,
+    containerSelector,
+    itemSelector,
+    noResultsId,
+    searchQueryId,
+) {
+    const container = document.querySelector(containerSelector);
+    if (!container) {
+        return;
+    }
+
+    const items = container.querySelectorAll(itemSelector);
+    const search = searchText.toLowerCase().trim();
+    let hasVisibleItems = false;
+
+    items.forEach((item) => {
+        let textContent = "";
+
+        // Get text from all text nodes within the item
+        const textElements = item.querySelectorAll(
+            "span, .text-xs, .font-medium",
+        );
+        textElements.forEach((el) => {
+            textContent += " " + el.textContent;
+        });
+
+        // Also get direct text content
+        textContent += " " + item.textContent;
+
+        if (search === "" || textContent.toLowerCase().includes(search)) {
+            item.style.display = "";
+            hasVisibleItems = true;
+        } else {
+            item.style.display = "none";
+        }
+    });
+
+    // Handle no results message
+    const noResultsMessage = safeGetElement(noResultsId, true);
+    const searchQuerySpan = safeGetElement(searchQueryId, true);
+
+    if (search !== "" && !hasVisibleItems) {
+        if (noResultsMessage) {
+            noResultsMessage.style.display = "block";
+        }
+        if (searchQuerySpan) {
+            searchQuerySpan.textContent = searchText;
+        }
+    } else {
+        if (noResultsMessage) {
+            noResultsMessage.style.display = "none";
+        }
+    }
+}
+
+/**
+ * Filter server table rows based on search text
+ */
+function filterServerTable(searchText) {
+    try {
+        const tbody = document.querySelector(
+            'tbody[data-testid="server-list"]',
+        );
+        if (!tbody) {
+            console.warn("Server table not found");
+            return;
+        }
+
+        const rows = tbody.querySelectorAll('tr[data-testid="server-item"]');
+        const search = searchText.toLowerCase().trim();
+
+        rows.forEach((row) => {
+            let textContent = "";
+
+            // Get text from all cells in the row
+            const cells = row.querySelectorAll("td");
+            cells.forEach((cell) => {
+                textContent += " " + cell.textContent;
+            });
+
+            if (search === "" || textContent.toLowerCase().includes(search)) {
+                row.style.display = "";
+            } else {
+                row.style.display = "none";
+            }
+        });
+    } catch (error) {
+        console.error("Error filtering server table:", error);
+    }
+}
+
+// Make server search function available globally
+window.filterServerTable = filterServerTable;
 
 function handleAuthTypeChange() {
     const authType = this.value;
@@ -7311,6 +8758,8 @@ window.editGateway = editGateway;
 window.viewServer = viewServer;
 window.editServer = editServer;
 window.runToolTest = runToolTest;
+window.testPrompt = testPrompt;
+window.runPromptTest = runPromptTest;
 window.closeModal = closeModal;
 window.testGateway = testGateway;
 
@@ -7341,6 +8790,24 @@ function showConfigSelectionModal(serverId, serverName) {
     }
 
     openModal("config-selection-modal");
+}
+/**
+ * Build MCP_SERVER_CATALOG_URL for a given server
+ * @param {Object} server
+ * @returns {string}
+ */
+function getCatalogUrl(server) {
+    const currentHost = window.location.hostname;
+    const currentPort =
+        window.location.port ||
+        (window.location.protocol === "https:" ? "443" : "80");
+    const protocol = window.location.protocol;
+
+    const baseUrl = `${protocol}//${currentHost}${
+        currentPort !== "80" && currentPort !== "443" ? ":" + currentPort : ""
+    }`;
+
+    return `${baseUrl}/servers/${server.id}`;
 }
 
 /**
@@ -8138,9 +9605,12 @@ async function fetchToolsForGateway(gatewayId, gatewayName) {
         "inline-block bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-1 rounded text-sm mr-2";
 
     try {
-        const response = await fetch(`/oauth/fetch-tools/${gatewayId}`, {
-            method: "POST",
-        });
+        const response = await fetch(
+            `${window.ROOT_PATH}/oauth/fetch-tools/${gatewayId}`,
+            {
+                method: "POST",
+            },
+        );
 
         const result = await response.json();
 
@@ -8193,9 +9663,7 @@ function setupBulkImportModal() {
     const modal = safeGetElement(modalId, true);
 
     if (!openBtn || !modal) {
-        console.warn(
-            "Bulk Import modal wiring skipped (missing button or modal).",
-        );
+        // Bulk import feature not available - skip silently
         return;
     }
 
@@ -8489,12 +9957,15 @@ async function handleExportAll() {
             params.append("include_dependencies", "false");
         }
 
-        const response = await fetch(`/admin/export/configuration?${params}`, {
-            method: "GET",
-            headers: {
-                Authorization: `Bearer ${getCookie("jwt_token")}`,
+        const response = await fetch(
+            `${window.ROOT_PATH}/admin/export/configuration?${params}`,
+            {
+                method: "GET",
+                headers: {
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                },
             },
-        });
+        );
 
         if (!response.ok) {
             throw new Error(`Export failed: ${response.statusText}`);
@@ -8678,9 +10149,13 @@ function processImportFile(file) {
             // Store import data and enable buttons
             window.currentImportData = importData;
 
+            const previewBtn = document.getElementById("import-preview-btn");
             const validateBtn = document.getElementById("import-validate-btn");
             const executeBtn = document.getElementById("import-execute-btn");
 
+            if (previewBtn) {
+                previewBtn.disabled = false;
+            }
             if (validateBtn) {
                 validateBtn.disabled = false;
             }
@@ -8754,9 +10229,13 @@ function resetImportFile() {
         `;
     }
 
+    const previewBtn = document.getElementById("import-preview-btn");
     const validateBtn = document.getElementById("import-validate-btn");
     const executeBtn = document.getElementById("import-execute-btn");
 
+    if (previewBtn) {
+        previewBtn.disabled = true;
+    }
     if (validateBtn) {
         validateBtn.disabled = true;
     }
@@ -8768,6 +10247,51 @@ function resetImportFile() {
     const statusSection = document.getElementById("import-status-section");
     if (statusSection) {
         statusSection.classList.add("hidden");
+    }
+}
+
+/**
+ * Preview import file for selective import
+ */
+async function previewImport() {
+    console.log("🔍 Generating import preview...");
+
+    if (!window.currentImportData) {
+        showNotification("❌ Please select an import file first", "error");
+        return;
+    }
+
+    try {
+        showImportProgress(true);
+
+        const response = await fetch(
+            (window.ROOT_PATH || "") + "/admin/import/preview",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                },
+                body: JSON.stringify({ data: window.currentImportData }),
+            },
+        );
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(
+                errorData.detail || `Preview failed: ${response.statusText}`,
+            );
+        }
+
+        const result = await response.json();
+        displayImportPreview(result.preview);
+
+        showNotification("✅ Import preview generated successfully", "success");
+    } catch (error) {
+        console.error("Import preview error:", error);
+        showNotification(`❌ Preview failed: ${error.message}`, "error");
+    } finally {
+        showImportProgress(false);
     }
 }
 
@@ -8798,14 +10322,17 @@ async function handleImport(dryRun = false) {
             rekey_secret: rekeySecret,
         };
 
-        const response = await fetch("/admin/import/configuration", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${getCookie("jwt_token")}`,
+        const response = await fetch(
+            (window.ROOT_PATH || "") + "/admin/import/configuration",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                },
+                body: JSON.stringify(requestData),
             },
-            body: JSON.stringify(requestData),
-        });
+        );
 
         if (!response.ok) {
             const errorData = await response.json();
@@ -8931,9 +10458,13 @@ function displayImportMessages(errors, warnings, isDryRun) {
  */
 function showImportProgress(show) {
     // Disable/enable buttons during operation
+    const previewBtn = document.getElementById("import-preview-btn");
     const validateBtn = document.getElementById("import-validate-btn");
     const executeBtn = document.getElementById("import-execute-btn");
 
+    if (previewBtn) {
+        previewBtn.disabled = show;
+    }
     if (validateBtn) {
         validateBtn.disabled = show;
     }
@@ -8947,11 +10478,14 @@ function showImportProgress(show) {
  */
 async function loadRecentImports() {
     try {
-        const response = await fetch("/admin/import/status", {
-            headers: {
-                Authorization: `Bearer ${getCookie("jwt_token")}`,
+        const response = await fetch(
+            (window.ROOT_PATH || "") + "/admin/import/status",
+            {
+                headers: {
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                },
             },
-        });
+        );
 
         if (response.ok) {
             const imports = await response.json();
@@ -9050,20 +10584,8 @@ async function testA2AAgent(agentId, agentName, endpointUrl) {
             '<div class="text-blue-600">🔄 Testing agent...</div>';
         testResult.classList.remove("hidden");
 
-        // Get auth token from cookie or local storage
-        let token = getCookie("jwt_token");
-
-        // Try alternative cookie names if primary not found
-        if (!token) {
-            token = getCookie("access_token") || getCookie("auth_token");
-        }
-
-        // Try to get from localStorage as fallback
-        if (!token) {
-            token =
-                localStorage.getItem("jwt_token") ||
-                localStorage.getItem("auth_token");
-        }
+        // Get auth token using the robust getAuthToken function
+        const token = await getAuthToken();
 
         // Debug logging
         console.log("Available cookies:", document.cookie);
@@ -9096,7 +10618,7 @@ async function testA2AAgent(agentId, agentName, endpointUrl) {
                 headers,
                 body: JSON.stringify(testPayload),
             },
-            10000, // 10 second timeout
+            window.MCPGATEWAY_UI_TOOL_TEST_TIMEOUT || 60000, // Use configurable timeout
         );
 
         if (!response.ok) {
@@ -9157,3 +10679,1793 @@ async function testA2AAgent(agentId, agentName, endpointUrl) {
 
 // Expose A2A test function to global scope
 window.testA2AAgent = testA2AAgent;
+
+/**
+ * Token Management Functions
+ */
+
+/**
+ * Load tokens list from API
+ */
+async function loadTokensList() {
+    const tokensList = safeGetElement("tokens-list");
+    if (!tokensList) {
+        return;
+    }
+
+    try {
+        tokensList.innerHTML =
+            '<p class="text-gray-500 dark:text-gray-400">Loading tokens...</p>';
+
+        const response = await fetchWithTimeout(`${window.ROOT_PATH}/tokens`, {
+            headers: {
+                Authorization: `Bearer ${await getAuthToken()}`,
+                "Content-Type": "application/json",
+            },
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to load tokens: ${response.status}`);
+        }
+
+        const data = await response.json();
+        displayTokensList(data.tokens);
+    } catch (error) {
+        console.error("Error loading tokens:", error);
+        tokensList.innerHTML = `<div class="text-red-500">Error loading tokens: ${escapeHtml(error.message)}</div>`;
+    }
+}
+
+/**
+ * Display tokens list in the UI
+ */
+function displayTokensList(tokens) {
+    const tokensList = safeGetElement("tokens-list");
+    if (!tokensList) {
+        return;
+    }
+
+    if (!tokens || tokens.length === 0) {
+        tokensList.innerHTML =
+            '<p class="text-gray-500 dark:text-gray-400">No tokens found. Create your first token above.</p>';
+        return;
+    }
+
+    let tokensHTML = "";
+    tokens.forEach((token) => {
+        const expiresText = token.expires_at
+            ? new Date(token.expires_at).toLocaleDateString()
+            : "Never";
+        const lastUsedText = token.last_used
+            ? new Date(token.last_used).toLocaleDateString()
+            : "Never";
+        const statusBadge = token.is_active
+            ? '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-800 dark:text-green-100">Active</span>'
+            : '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-800 dark:text-red-100">Inactive</span>';
+
+        tokensHTML += `
+            <div class="border border-gray-200 dark:border-gray-600 rounded-lg p-4 mb-4">
+                <div class="flex justify-between items-start">
+                    <div class="flex-1">
+                        <div class="flex items-center space-x-2">
+                            <h4 class="text-lg font-medium text-gray-900 dark:text-white">${escapeHtml(token.name)}</h4>
+                            ${statusBadge}
+                        </div>
+                        ${token.description ? `<p class="text-sm text-gray-600 dark:text-gray-400 mt-1">${escapeHtml(token.description)}</p>` : ""}
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3 text-sm text-gray-500 dark:text-gray-400">
+                            <div>
+                                <span class="font-medium">Created:</span> ${new Date(token.created_at).toLocaleDateString()}
+                            </div>
+                            <div>
+                                <span class="font-medium">Expires:</span> ${expiresText}
+                            </div>
+                            <div>
+                                <span class="font-medium">Last Used:</span> ${lastUsedText}
+                            </div>
+                        </div>
+                        ${token.server_id ? `<div class="mt-2 text-sm"><span class="font-medium text-gray-700 dark:text-gray-300">Scoped to Server:</span> ${escapeHtml(token.server_id)}</div>` : ""}
+                        ${token.resource_scopes && token.resource_scopes.length > 0 ? `<div class="mt-1 text-sm"><span class="font-medium text-gray-700 dark:text-gray-300">Permissions:</span> ${token.resource_scopes.map((p) => escapeHtml(p)).join(", ")}</div>` : ""}
+                    </div>
+                    <div class="flex space-x-2 ml-4">
+                        <button
+                            onclick="viewTokenUsage('${token.id}')"
+                            class="px-3 py-1 text-sm font-medium text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 border border-blue-300 dark:border-blue-600 hover:border-blue-500 dark:hover:border-blue-400 rounded-md"
+                        >
+                            Usage Stats
+                        </button>
+                        <button
+                            onclick="revokeToken('${token.id}', '${escapeHtml(token.name)}')"
+                            class="px-3 py-1 text-sm font-medium text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 border border-red-300 dark:border-red-600 hover:border-red-500 dark:hover:border-red-400 rounded-md"
+                        >
+                            Revoke
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+
+    tokensList.innerHTML = tokensHTML;
+}
+
+/**
+ * Set up create token form handling
+ */
+function setupCreateTokenForm() {
+    const form = safeGetElement("create-token-form");
+    if (!form) {
+        return;
+    }
+
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        await createToken(form);
+    });
+}
+
+/**
+ * Create a new API token
+ */
+async function createToken(form) {
+    const formData = new FormData(form);
+    const submitButton = form.querySelector('button[type="submit"]');
+    const originalText = submitButton.textContent;
+
+    try {
+        submitButton.textContent = "Creating...";
+        submitButton.disabled = true;
+
+        // Build request payload
+        const payload = {
+            name: formData.get("name"),
+            description: formData.get("description") || null,
+            expires_in_days: formData.get("expires_in_days")
+                ? parseInt(formData.get("expires_in_days"))
+                : null,
+            tags: [], // Always include empty tags array
+        };
+
+        // Add scoping if provided
+        const scope = {};
+        if (formData.get("server_id")) {
+            scope.server_id = formData.get("server_id");
+        }
+        if (formData.get("ip_restrictions")) {
+            // Parse IP restrictions as array (split by comma if multiple)
+            const ipRestrictions = formData.get("ip_restrictions").trim();
+            scope.ip_restrictions = ipRestrictions
+                ? ipRestrictions.split(",").map((ip) => ip.trim())
+                : [];
+        } else {
+            scope.ip_restrictions = [];
+        }
+        if (formData.get("permissions")) {
+            scope.permissions = formData
+                .get("permissions")
+                .split(",")
+                .map((p) => p.trim())
+                .filter((p) => p.length > 0);
+        } else {
+            scope.permissions = [];
+        }
+
+        // Always include time_restrictions and usage_limits as empty objects
+        scope.time_restrictions = {};
+        scope.usage_limits = {};
+
+        // Always add scope object (even if empty) to ensure proper structure
+        payload.scope = scope;
+
+        const response = await fetchWithTimeout(`${window.ROOT_PATH}/tokens`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${await getAuthToken()}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(
+                error.detail || `Failed to create token: ${response.status}`,
+            );
+        }
+
+        const result = await response.json();
+
+        // Show the new token to the user (this is the only time they'll see it)
+        showTokenCreatedModal(result);
+
+        // Reset form and reload tokens list
+        form.reset();
+        await loadTokensList();
+
+        showNotification("Token created successfully", "success");
+    } catch (error) {
+        console.error("Error creating token:", error);
+        showNotification(`Error creating token: ${error.message}`, "error");
+    } finally {
+        submitButton.textContent = originalText;
+        submitButton.disabled = false;
+    }
+}
+
+/**
+ * Show modal with new token (one-time display)
+ */
+function showTokenCreatedModal(tokenData) {
+    const modal = document.createElement("div");
+    modal.className =
+        "fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50";
+    modal.innerHTML = `
+        <div class="relative top-20 mx-auto p-5 border w-11/12 max-w-lg shadow-lg rounded-md bg-white dark:bg-gray-800">
+            <div class="mt-3">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-medium text-gray-900 dark:text-white">Token Created Successfully</h3>
+                    <button onclick="this.closest('.fixed').remove()" class="text-gray-400 hover:text-gray-600">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="bg-yellow-50 dark:bg-yellow-900 border border-yellow-200 dark:border-yellow-700 rounded-md p-4 mb-4">
+                    <div class="flex">
+                        <div class="flex-shrink-0">
+                            <svg class="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                            </svg>
+                        </div>
+                        <div class="ml-3">
+                            <h3 class="text-sm font-medium text-yellow-800 dark:text-yellow-200">
+                                Important: Save your token now!
+                            </h3>
+                            <div class="mt-2 text-sm text-yellow-700 dark:text-yellow-300">
+                                This is the only time you will be able to see this token. Make sure to save it in a secure location.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Your API Token:
+                    </label>
+                    <div class="flex">
+                        <input
+                            type="text"
+                            value="${tokenData.access_token}"
+                            readonly
+                            class="flex-1 p-2 border border-gray-300 dark:border-gray-600 rounded-l-md bg-gray-50 dark:bg-gray-700 text-sm font-mono"
+                            id="new-token-value"
+                        />
+                        <button
+                            onclick="copyToClipboard('new-token-value')"
+                            class="px-3 py-2 bg-indigo-600 text-white text-sm rounded-r-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                            Copy
+                        </button>
+                    </div>
+                </div>
+
+                <div class="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                    <strong>Token Name:</strong> ${escapeHtml(tokenData.token.name || "Unnamed Token")}<br/>
+                    <strong>Expires:</strong> ${tokenData.token.expires_at ? new Date(tokenData.token.expires_at).toLocaleDateString() : "Never"}
+                </div>
+
+                <div class="flex justify-end">
+                    <button
+                        onclick="this.closest('.fixed').remove()"
+                        class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                        I've Saved It
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Focus the token input for easy selection
+    const tokenInput = modal.querySelector("#new-token-value");
+    tokenInput.focus();
+    tokenInput.select();
+}
+
+/**
+ * Copy text to clipboard
+ */
+function copyToClipboard(elementId) {
+    const element = document.getElementById(elementId);
+    if (element) {
+        element.select();
+        document.execCommand("copy");
+        showNotification("Token copied to clipboard", "success");
+    }
+}
+
+/**
+ * Revoke a token
+ */
+async function revokeToken(tokenId, tokenName) {
+    if (
+        !confirm(
+            `Are you sure you want to revoke the token "${tokenName}"? This action cannot be undone.`,
+        )
+    ) {
+        return;
+    }
+
+    try {
+        const response = await fetchWithTimeout(
+            `${window.ROOT_PATH}/tokens/${tokenId}`,
+            {
+                method: "DELETE",
+                headers: {
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    reason: "Revoked by user via admin interface",
+                }),
+            },
+        );
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(
+                error.detail || `Failed to revoke token: ${response.status}`,
+            );
+        }
+
+        showNotification("Token revoked successfully", "success");
+        await loadTokensList();
+    } catch (error) {
+        console.error("Error revoking token:", error);
+        showNotification(`Error revoking token: ${error.message}`, "error");
+    }
+}
+
+/**
+ * View token usage statistics
+ */
+async function viewTokenUsage(tokenId) {
+    try {
+        const response = await fetchWithTimeout(
+            `${window.ROOT_PATH}/tokens/${tokenId}/usage`,
+            {
+                headers: {
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                    "Content-Type": "application/json",
+                },
+            },
+        );
+
+        if (!response.ok) {
+            throw new Error(`Failed to load usage stats: ${response.status}`);
+        }
+
+        const stats = await response.json();
+        showUsageStatsModal(stats);
+    } catch (error) {
+        console.error("Error loading usage stats:", error);
+        showNotification(
+            `Error loading usage stats: ${error.message}`,
+            "error",
+        );
+    }
+}
+
+/**
+ * Show usage statistics modal
+ */
+function showUsageStatsModal(stats) {
+    const modal = document.createElement("div");
+    modal.className =
+        "fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50";
+    modal.innerHTML = `
+        <div class="relative top-20 mx-auto p-5 border w-11/12 max-w-2xl shadow-lg rounded-md bg-white dark:bg-gray-800">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-medium text-gray-900 dark:text-white">Token Usage Statistics (Last ${stats.period_days} Days)</h3>
+                <button onclick="this.closest('.fixed').remove()" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                <div class="bg-blue-50 dark:bg-blue-900 p-4 rounded-lg">
+                    <div class="text-2xl font-bold text-blue-600 dark:text-blue-300">${stats.total_requests}</div>
+                    <div class="text-sm text-blue-600 dark:text-blue-400">Total Requests</div>
+                </div>
+                <div class="bg-green-50 dark:bg-green-900 p-4 rounded-lg">
+                    <div class="text-2xl font-bold text-green-600 dark:text-green-300">${stats.successful_requests}</div>
+                    <div class="text-sm text-green-600 dark:text-green-400">Successful</div>
+                </div>
+                <div class="bg-red-50 dark:bg-red-900 p-4 rounded-lg">
+                    <div class="text-2xl font-bold text-red-600 dark:text-red-300">${stats.blocked_requests}</div>
+                    <div class="text-sm text-red-600 dark:text-red-400">Blocked</div>
+                </div>
+                <div class="bg-purple-50 dark:bg-purple-900 p-4 rounded-lg">
+                    <div class="text-2xl font-bold text-purple-600 dark:text-purple-300">${Math.round(stats.success_rate * 100)}%</div>
+                    <div class="text-sm text-purple-600 dark:text-purple-400">Success Rate</div>
+                </div>
+            </div>
+
+            <div class="mb-4">
+                <h4 class="text-md font-medium text-gray-900 dark:text-white mb-2">Average Response Time</h4>
+                <div class="text-lg text-gray-700 dark:text-gray-300">${stats.average_response_time_ms}ms</div>
+            </div>
+
+            ${
+                stats.top_endpoints && stats.top_endpoints.length > 0
+                    ? `
+                <div class="mb-4">
+                    <h4 class="text-md font-medium text-gray-900 dark:text-white mb-2">Top Endpoints</h4>
+                    <div class="space-y-2">
+                        ${stats.top_endpoints
+                            .map(
+                                ([endpoint, count]) => `
+                            <div class="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
+                                <span class="font-mono text-sm">${escapeHtml(endpoint)}</span>
+                                <span class="text-sm font-medium">${count} requests</span>
+                            </div>
+                        `,
+                            )
+                            .join("")}
+                    </div>
+                </div>
+            `
+                    : ""
+            }
+
+            <div class="flex justify-end">
+                <button
+                    onclick="this.closest('.fixed').remove()"
+                    class="px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500"
+                >
+                    Close
+                </button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+}
+
+/**
+ * Get auth token from storage or user input
+ */
+async function getAuthToken() {
+    // Use the same authentication method as the rest of the admin interface
+    let token = getCookie("jwt_token");
+
+    // Try alternative cookie names if primary not found
+    if (!token) {
+        token = getCookie("token");
+    }
+
+    // Fallback to localStorage for compatibility
+    if (!token) {
+        token = localStorage.getItem("auth_token");
+    }
+
+    return token || "";
+}
+
+// Expose token management functions to global scope
+window.loadTokensList = loadTokensList;
+window.setupCreateTokenForm = setupCreateTokenForm;
+window.createToken = createToken;
+window.revokeToken = revokeToken;
+window.viewTokenUsage = viewTokenUsage;
+window.copyToClipboard = copyToClipboard;
+
+// ===================================================================
+// USER MANAGEMENT FUNCTIONS
+// ===================================================================
+
+/**
+ * Show user edit modal and load edit form
+ */
+function showUserEditModal(userEmail) {
+    const modal = document.getElementById("user-edit-modal");
+    if (modal) {
+        modal.style.display = "block";
+        modal.classList.remove("hidden");
+    }
+}
+
+/**
+ * Hide user edit modal
+ */
+function hideUserEditModal() {
+    const modal = document.getElementById("user-edit-modal");
+    if (modal) {
+        modal.style.display = "none";
+        modal.classList.add("hidden");
+    }
+}
+
+/**
+ * Close modal when clicking outside of it
+ */
+document.addEventListener("DOMContentLoaded", function () {
+    const userModal = document.getElementById("user-edit-modal");
+    if (userModal) {
+        userModal.addEventListener("click", function (event) {
+            if (event.target === userModal) {
+                hideUserEditModal();
+            }
+        });
+    }
+
+    const teamModal = document.getElementById("team-edit-modal");
+    if (teamModal) {
+        teamModal.addEventListener("click", function (event) {
+            if (event.target === teamModal) {
+                hideTeamEditModal();
+            }
+        });
+    }
+
+    // Handle HTMX events to show/hide modal
+    document.body.addEventListener("htmx:afterRequest", function (event) {
+        if (
+            event.detail.pathInfo.requestPath.includes("/admin/users/") &&
+            event.detail.pathInfo.requestPath.includes("/edit")
+        ) {
+            showUserEditModal();
+        }
+    });
+});
+
+// Expose user modal functions to global scope
+window.showUserEditModal = showUserEditModal;
+window.hideUserEditModal = hideUserEditModal;
+
+// Team edit modal functions
+async function showTeamEditModal(teamId) {
+    // Get the root path by extracting it from the current pathname
+    let rootPath = window.location.pathname;
+    const adminIndex = rootPath.lastIndexOf("/admin");
+    if (adminIndex !== -1) {
+        rootPath = rootPath.substring(0, adminIndex);
+    } else {
+        rootPath = "";
+    }
+
+    // Construct the full URL - ensure it starts with /
+    const url = (rootPath || "") + "/admin/teams/" + teamId + "/edit";
+
+    // Load the team edit form via HTMX
+    fetch(url, {
+        method: "GET",
+        headers: {
+            Authorization: "Bearer " + (await getAuthToken()),
+        },
+    })
+        .then((response) => response.text())
+        .then((html) => {
+            document.getElementById("team-edit-modal-content").innerHTML = html;
+            document
+                .getElementById("team-edit-modal")
+                .classList.remove("hidden");
+        })
+        .catch((error) => {
+            console.error("Error loading team edit form:", error);
+        });
+}
+
+function hideTeamEditModal() {
+    document.getElementById("team-edit-modal").classList.add("hidden");
+}
+
+// Expose team modal functions to global scope
+window.showTeamEditModal = showTeamEditModal;
+window.hideTeamEditModal = hideTeamEditModal;
+
+// Team member management functions
+function showAddMemberForm(teamId) {
+    const form = document.getElementById("add-member-form-" + teamId);
+    if (form) {
+        form.classList.remove("hidden");
+    }
+}
+
+function hideAddMemberForm(teamId) {
+    const form = document.getElementById("add-member-form-" + teamId);
+    if (form) {
+        form.classList.add("hidden");
+        // Reset form
+        const formElement = form.querySelector("form");
+        if (formElement) {
+            formElement.reset();
+        }
+    }
+}
+
+// Expose team member management functions to global scope
+window.showAddMemberForm = showAddMemberForm;
+window.hideAddMemberForm = hideAddMemberForm;
+
+// Logs refresh function
+function refreshLogs() {
+    const logsSection = document.getElementById("logs");
+    if (logsSection && typeof window.htmx !== "undefined") {
+        // Trigger HTMX refresh on the logs section
+        window.htmx.trigger(logsSection, "refresh");
+    }
+}
+
+// Expose logs functions to global scope
+window.refreshLogs = refreshLogs;
+
+// User edit modal functions (already defined above)
+// Functions are already exposed to global scope
+
+// Team permissions functions are implemented in the admin.html template
+// Remove placeholder functions to avoid overriding template functionality
+
+function initializePermissionsPanel() {
+    // Load team data if available
+    if (window.USER_TEAMS && window.USER_TEAMS.length > 0) {
+        const membersList = document.getElementById("team-members-list");
+        const rolesList = document.getElementById("role-assignments-list");
+
+        if (membersList) {
+            membersList.innerHTML =
+                '<div class="text-sm text-gray-500 dark:text-gray-400">Use the Teams Management tab to view and manage team members.</div>';
+        }
+
+        if (rolesList) {
+            rolesList.innerHTML =
+                '<div class="text-sm text-gray-500 dark:text-gray-400">Use the Teams Management tab to assign roles to team members.</div>';
+        }
+    }
+}
+
+// Permission functions are implemented in admin.html template - don't override them
+window.initializePermissionsPanel = initializePermissionsPanel;
+
+// ===================================================================
+// TEAM DISCOVERY AND SELF-SERVICE FUNCTIONS
+// ===================================================================
+
+/**
+ * Load and display public teams that the user can join
+ */
+async function loadPublicTeams() {
+    const container = safeGetElement("public-teams-list");
+    if (!container) {
+        console.error("Public teams list container not found");
+        return;
+    }
+
+    // Show loading state
+    container.innerHTML =
+        '<div class="animate-pulse text-gray-500 dark:text-gray-400">Loading public teams...</div>';
+
+    try {
+        const response = await fetchWithTimeout(
+            `${window.ROOT_PATH || ""}/teams/discover`,
+            {
+                headers: {
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                    "Content-Type": "application/json",
+                },
+            },
+        );
+        if (!response.ok) {
+            throw new Error(`Failed to load teams: ${response.status}`);
+        }
+
+        const teams = await response.json();
+        displayPublicTeams(teams);
+    } catch (error) {
+        console.error("Error loading public teams:", error);
+        container.innerHTML = `
+            <div class="bg-red-50 dark:bg-red-900 border border-red-200 dark:border-red-700 rounded-md p-4">
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <svg class="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <div class="ml-3">
+                        <h3 class="text-sm font-medium text-red-800 dark:text-red-200">
+                            Failed to load public teams
+                        </h3>
+                        <div class="mt-2 text-sm text-red-700 dark:text-red-300">
+                            ${escapeHtml(error.message)}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+}
+
+/**
+ * Display public teams in the UI
+ * @param {Array} teams - Array of team objects
+ */
+function displayPublicTeams(teams) {
+    const container = safeGetElement("public-teams-list");
+    if (!container) {
+        return;
+    }
+
+    if (!teams || teams.length === 0) {
+        container.innerHTML = `
+            <div class="text-center py-8">
+                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.83-1M17 20H7m10 0v-2c0-1.09-.29-2.11-.83-3M7 20v2m0-2v-2a3 3 0 011.87-2.77m0 0A3 3 0 017 12m0 0a3 3 0 013-3m-3 3h6.4M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <h3 class="mt-2 text-sm font-medium text-gray-900 dark:text-gray-100">No public teams found</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">There are no public teams available to join at the moment.</p>
+            </div>
+        `;
+        return;
+    }
+
+    // Create teams grid
+    const teamsHtml = teams
+        .map(
+            (team) => `
+        <div class="bg-white dark:bg-gray-700 shadow rounded-lg p-6 hover:shadow-lg transition-shadow">
+            <div class="flex items-center justify-between">
+                <h3 class="text-lg font-medium text-gray-900 dark:text-white">
+                    ${escapeHtml(team.name)}
+                </h3>
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                    Public
+                </span>
+            </div>
+
+            ${
+                team.description
+                    ? `
+                <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                    ${escapeHtml(team.description)}
+                </p>
+            `
+                    : ""
+            }
+
+            <div class="mt-4 flex items-center justify-between">
+                <div class="flex items-center text-sm text-gray-500 dark:text-gray-400">
+                    <svg class="flex-shrink-0 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z"/>
+                    </svg>
+                    ${team.member_count} members
+                </div>
+                <button
+                    onclick="requestToJoinTeam('${escapeHtml(team.id)}')"
+                    class="px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                >
+                    Request to Join
+                </button>
+            </div>
+        </div>
+    `,
+        )
+        .join("");
+
+    container.innerHTML = `
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            ${teamsHtml}
+        </div>
+    `;
+}
+
+/**
+ * Request to join a public team
+ * @param {string} teamId - ID of the team to join
+ */
+async function requestToJoinTeam(teamId) {
+    if (!teamId) {
+        console.error("Team ID is required");
+        return;
+    }
+
+    // Show confirmation dialog
+    const message = prompt("Optional: Enter a message to the team owners:");
+
+    try {
+        const response = await fetchWithTimeout(
+            `${window.ROOT_PATH || ""}/teams/${teamId}/join`,
+            {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    message: message || null,
+                }),
+            },
+        );
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => null);
+            throw new Error(
+                errorData?.detail ||
+                    `Failed to request join: ${response.status}`,
+            );
+        }
+
+        const result = await response.json();
+
+        // Show success message
+        showSuccessMessage(
+            `Join request sent to ${result.team_name}! Team owners will review your request.`,
+        );
+
+        // Refresh the public teams list
+        setTimeout(loadPublicTeams, 1000);
+    } catch (error) {
+        console.error("Error requesting to join team:", error);
+        showErrorMessage(`Failed to send join request: ${error.message}`);
+    }
+}
+
+/**
+ * Leave a team
+ * @param {string} teamId - ID of the team to leave
+ * @param {string} teamName - Name of the team (for confirmation)
+ */
+async function leaveTeam(teamId, teamName) {
+    if (!teamId) {
+        console.error("Team ID is required");
+        return;
+    }
+
+    // Show confirmation dialog
+    const confirmed = confirm(
+        `Are you sure you want to leave the team "${teamName}"? This action cannot be undone.`,
+    );
+    if (!confirmed) {
+        return;
+    }
+
+    try {
+        const response = await fetchWithTimeout(
+            `${window.ROOT_PATH || ""}/teams/${teamId}/leave`,
+            {
+                method: "DELETE",
+                headers: {
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                    "Content-Type": "application/json",
+                },
+            },
+        );
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => null);
+            throw new Error(
+                errorData?.detail || `Failed to leave team: ${response.status}`,
+            );
+        }
+
+        await response.json();
+
+        // Show success message
+        showSuccessMessage(`Successfully left ${teamName}`);
+
+        // Refresh teams list
+        const teamsList = safeGetElement("teams-list");
+        if (teamsList && window.htmx) {
+            window.htmx.trigger(teamsList, "load");
+        }
+
+        // Refresh team selector if available
+        if (typeof updateTeamContext === "function") {
+            // Force reload teams data
+            setTimeout(() => {
+                window.location.reload();
+            }, 1500);
+        }
+    } catch (error) {
+        console.error("Error leaving team:", error);
+        showErrorMessage(`Failed to leave team: ${error.message}`);
+    }
+}
+
+/**
+ * Approve a join request
+ * @param {string} teamId - ID of the team
+ * @param {string} requestId - ID of the join request
+ */
+async function approveJoinRequest(teamId, requestId) {
+    if (!teamId || !requestId) {
+        console.error("Team ID and request ID are required");
+        return;
+    }
+
+    try {
+        const response = await fetchWithTimeout(
+            `${window.ROOT_PATH || ""}/teams/${teamId}/join-requests/${requestId}/approve`,
+            {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                    "Content-Type": "application/json",
+                },
+            },
+        );
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => null);
+            throw new Error(
+                errorData?.detail ||
+                    `Failed to approve join request: ${response.status}`,
+            );
+        }
+
+        const result = await response.json();
+
+        // Show success message
+        showSuccessMessage(
+            `Join request approved! ${result.user_email} is now a member.`,
+        );
+
+        // Refresh teams list
+        const teamsList = safeGetElement("teams-list");
+        if (teamsList && window.htmx) {
+            window.htmx.trigger(teamsList, "load");
+        }
+    } catch (error) {
+        console.error("Error approving join request:", error);
+        showErrorMessage(`Failed to approve join request: ${error.message}`);
+    }
+}
+
+/**
+ * Reject a join request
+ * @param {string} teamId - ID of the team
+ * @param {string} requestId - ID of the join request
+ */
+async function rejectJoinRequest(teamId, requestId) {
+    if (!teamId || !requestId) {
+        console.error("Team ID and request ID are required");
+        return;
+    }
+
+    const confirmed = confirm(
+        "Are you sure you want to reject this join request?",
+    );
+    if (!confirmed) {
+        return;
+    }
+
+    try {
+        const response = await fetchWithTimeout(
+            `${window.ROOT_PATH || ""}/teams/${teamId}/join-requests/${requestId}`,
+            {
+                method: "DELETE",
+                headers: {
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                    "Content-Type": "application/json",
+                },
+            },
+        );
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => null);
+            throw new Error(
+                errorData?.detail ||
+                    `Failed to reject join request: ${response.status}`,
+            );
+        }
+
+        // Show success message
+        showSuccessMessage("Join request rejected.");
+
+        // Refresh teams list
+        const teamsList = safeGetElement("teams-list");
+        if (teamsList && window.htmx) {
+            window.htmx.trigger(teamsList, "load");
+        }
+    } catch (error) {
+        console.error("Error rejecting join request:", error);
+        showErrorMessage(`Failed to reject join request: ${error.message}`);
+    }
+}
+
+// Expose team functions to global scope
+window.loadPublicTeams = loadPublicTeams;
+window.requestToJoinTeam = requestToJoinTeam;
+window.leaveTeam = leaveTeam;
+window.approveJoinRequest = approveJoinRequest;
+window.rejectJoinRequest = rejectJoinRequest;
+
+/**
+ * Validate password match in user edit form
+ */
+function validatePasswordMatch() {
+    const passwordField = document.getElementById("password-field");
+    const confirmPasswordField = document.getElementById(
+        "confirm-password-field",
+    );
+    const messageElement = document.getElementById("password-match-message");
+    const submitButton = document.querySelector(
+        '#user-edit-modal-content button[type="submit"]',
+    );
+
+    if (!passwordField || !confirmPasswordField || !messageElement) {
+        return;
+    }
+
+    const password = passwordField.value;
+    const confirmPassword = confirmPasswordField.value;
+
+    // Only show validation if both fields have content or if confirm field has content
+    if (
+        (password.length > 0 || confirmPassword.length > 0) &&
+        password !== confirmPassword
+    ) {
+        messageElement.classList.remove("hidden");
+        confirmPasswordField.classList.add("border-red-500");
+        if (submitButton) {
+            submitButton.disabled = true;
+            submitButton.classList.add("opacity-50", "cursor-not-allowed");
+        }
+    } else {
+        messageElement.classList.add("hidden");
+        confirmPasswordField.classList.remove("border-red-500");
+        if (submitButton) {
+            submitButton.disabled = false;
+            submitButton.classList.remove("opacity-50", "cursor-not-allowed");
+        }
+    }
+}
+
+// Expose password validation function to global scope
+window.validatePasswordMatch = validatePasswordMatch;
+
+// ===================================================================
+// SELECTIVE IMPORT FUNCTIONS
+// ===================================================================
+
+/**
+ * Display import preview with selective import options
+ */
+function displayImportPreview(preview) {
+    console.log("📋 Displaying import preview:", preview);
+
+    // Find or create preview container
+    let previewContainer = document.getElementById("import-preview-container");
+    if (!previewContainer) {
+        previewContainer = document.createElement("div");
+        previewContainer.id = "import-preview-container";
+        previewContainer.className = "mt-6 border-t pt-6";
+
+        // Insert after import options in the import section
+        const importSection =
+            document.querySelector("#import-drop-zone").parentElement
+                .parentElement;
+        importSection.appendChild(previewContainer);
+    }
+
+    previewContainer.innerHTML = `
+        <h4 class="text-lg font-medium text-gray-900 dark:text-white mb-4">
+            📋 Selective Import - Choose What to Import
+        </h4>
+
+        <!-- Summary -->
+        <div class="bg-blue-50 dark:bg-blue-900 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mb-6">
+            <div class="flex items-center">
+                <div class="ml-3">
+                    <h3 class="text-sm font-medium text-blue-800 dark:text-blue-200">
+                        Found ${preview.summary.total_items} items in import file
+                    </h3>
+                    <div class="mt-1 text-sm text-blue-600 dark:text-blue-300">
+                        ${Object.entries(preview.summary.by_type)
+                            .map(([type, count]) => `${type}: ${count}`)
+                            .join(", ")}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Selection Controls -->
+        <div class="flex justify-between items-center mb-4">
+            <div class="space-x-4">
+                <button onclick="selectAllItems()"
+                        class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 underline">
+                    Select All
+                </button>
+                <button onclick="selectNoneItems()"
+                        class="text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-300 underline">
+                    Select None
+                </button>
+                <button onclick="selectOnlyCustom()"
+                        class="text-sm text-green-600 dark:text-green-400 hover:text-green-800 dark:hover:text-green-300 underline">
+                    Custom Items Only
+                </button>
+            </div>
+
+            <div class="text-sm text-gray-500 dark:text-gray-400">
+                <span id="selection-count">0 items selected</span>
+            </div>
+        </div>
+
+        <!-- Gateway Bundles -->
+        ${
+            Object.keys(preview.bundles || {}).length > 0
+                ? `
+            <div class="mb-6">
+                <h5 class="text-md font-medium text-gray-900 dark:text-white mb-3">
+                    🌐 Gateway Bundles (Gateway + Auto-discovered Items)
+                </h5>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    ${Object.entries(preview.bundles)
+                        .map(
+                            ([gatewayName, bundle]) => `
+                        <div class="border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:bg-gray-50 dark:hover:bg-gray-750">
+                            <label class="flex items-start cursor-pointer">
+                                <input type="checkbox"
+                                       class="gateway-checkbox mt-1 mr-3"
+                                       data-gateway="${gatewayName}"
+                                       onchange="updateSelectionCount()">
+                                <div class="flex-1">
+                                    <div class="font-medium text-gray-900 dark:text-white">
+                                        ${bundle.gateway.name}
+                                    </div>
+                                    <div class="text-sm text-gray-500 dark:text-gray-400 mb-2">
+                                        ${bundle.gateway.description || "No description"}
+                                    </div>
+                                    <div class="text-xs text-blue-600 dark:text-blue-400">
+                                        Bundle includes: ${bundle.total_items} items
+                                        (${Object.entries(bundle.items)
+                                            .filter(
+                                                ([type, items]) =>
+                                                    items.length > 0,
+                                            )
+                                            .map(
+                                                ([type, items]) =>
+                                                    `${items.length} ${type}`,
+                                            )
+                                            .join(", ")})
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+                    `,
+                        )
+                        .join("")}
+                </div>
+            </div>
+        `
+                : ""
+        }
+
+        <!-- Custom Items by Type -->
+        ${Object.entries(preview.items || {})
+            .map(([entityType, items]) => {
+                const customItems = items.filter((item) => item.is_custom);
+                return customItems.length > 0
+                    ? `
+                <div class="mb-6">
+                    <h5 class="text-md font-medium text-gray-900 dark:text-white mb-3 capitalize">
+                        🛠️ Custom ${entityType}
+                    </h5>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        ${customItems
+                            .map(
+                                (item) => `
+                            <div class="border border-gray-200 dark:border-gray-700 rounded-lg p-3 hover:bg-gray-50 dark:hover:bg-gray-750 ${item.conflicts_with ? "border-orange-300 dark:border-orange-700 bg-orange-50 dark:bg-orange-900" : ""}">
+                                <label class="flex items-start cursor-pointer">
+                                    <input type="checkbox"
+                                           class="item-checkbox mt-1 mr-3"
+                                           data-type="${entityType}"
+                                           data-id="${item.id}"
+                                           onchange="updateSelectionCount()">
+                                    <div class="flex-1">
+                                        <div class="text-sm font-medium text-gray-900 dark:text-white">
+                                            ${item.name}
+                                            ${
+                                                item.conflicts_with
+                                                    ? '<span class="text-orange-600 text-xs ml-1">⚠️ Conflict</span>'
+                                                    : ""
+                                            }
+                                        </div>
+                                        <div class="text-xs text-gray-500 dark:text-gray-400">
+                                            ${item.description || `Custom ${entityType} item`}
+                                        </div>
+                                    </div>
+                                </label>
+                            </div>
+                        `,
+                            )
+                            .join("")}
+                    </div>
+                </div>
+            `
+                    : "";
+            })
+            .join("")}
+
+        <!-- Conflicts Warning -->
+        ${
+            Object.keys(preview.conflicts || {}).length > 0
+                ? `
+            <div class="mb-6">
+                <div class="bg-orange-50 dark:bg-orange-900 border border-orange-200 dark:border-orange-800 rounded-lg p-4">
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">
+                            <svg class="h-5 w-5 text-orange-400" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                            </svg>
+                        </div>
+                        <div class="ml-3">
+                            <h3 class="text-sm font-medium text-orange-800 dark:text-orange-200">
+                                Naming conflicts detected
+                            </h3>
+                            <div class="mt-1 text-sm text-orange-600 dark:text-orange-300">
+                                Some items have the same names as existing items. Use conflict strategy to resolve.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `
+                : ""
+        }
+
+        <!-- Action Buttons -->
+        <div class="flex justify-between pt-6 border-t border-gray-200 dark:border-gray-700">
+            <button onclick="resetImportSelection()"
+                    class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700">
+                🔄 Reset Selection
+            </button>
+
+            <div class="space-x-3">
+                <button onclick="handleSelectiveImport(true)"
+                        class="px-4 py-2 text-sm font-medium text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900 border border-blue-200 dark:border-blue-800 rounded-md hover:bg-blue-100 dark:hover:bg-blue-800">
+                    🧪 Preview Selected
+                </button>
+                <button onclick="handleSelectiveImport(false)"
+                        class="px-4 py-2 text-sm font-medium text-white bg-green-600 border border-transparent rounded-md hover:bg-green-700">
+                    ✅ Import Selected Items
+                </button>
+            </div>
+        </div>
+    `;
+
+    // Store preview data and show preview section
+    window.currentImportPreview = preview;
+    updateSelectionCount();
+}
+
+/**
+ * Handle selective import based on user selections
+ */
+async function handleSelectiveImport(dryRun = false) {
+    console.log(`🎯 Starting selective import (dry_run=${dryRun})`);
+
+    if (!window.currentImportData) {
+        showNotification("❌ Please select an import file first", "error");
+        return;
+    }
+
+    try {
+        showImportProgress(true);
+
+        // Collect user selections
+        const selectedEntities = collectUserSelections();
+
+        if (Object.keys(selectedEntities).length === 0) {
+            showNotification(
+                "❌ Please select at least one item to import",
+                "warning",
+            );
+            showImportProgress(false);
+            return;
+        }
+
+        const conflictStrategy =
+            document.getElementById("import-conflict-strategy")?.value ||
+            "update";
+        const rekeySecret =
+            document.getElementById("import-rekey-secret")?.value || null;
+
+        const requestData = {
+            import_data: window.currentImportData,
+            conflict_strategy: conflictStrategy,
+            dry_run: dryRun,
+            rekey_secret: rekeySecret,
+            selectedEntities,
+        };
+
+        console.log("🎯 Selected entities for import:", selectedEntities);
+
+        const response = await fetch(
+            (window.ROOT_PATH || "") + "/admin/import/configuration",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${await getAuthToken()}`,
+                },
+                body: JSON.stringify(requestData),
+            },
+        );
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(
+                errorData.detail || `Import failed: ${response.statusText}`,
+            );
+        }
+
+        const result = await response.json();
+        displayImportResults(result, dryRun);
+
+        if (!dryRun) {
+            refreshCurrentTabData();
+            showNotification(
+                "✅ Selective import completed successfully",
+                "success",
+            );
+        } else {
+            showNotification("✅ Import preview completed", "success");
+        }
+    } catch (error) {
+        console.error("Selective import error:", error);
+        showNotification(`❌ Import failed: ${error.message}`, "error");
+    } finally {
+        showImportProgress(false);
+    }
+}
+
+/**
+ * Collect user selections for selective import
+ */
+function collectUserSelections() {
+    const selections = {};
+
+    // Collect gateway selections
+    document
+        .querySelectorAll(".gateway-checkbox:checked")
+        .forEach((checkbox) => {
+            const gatewayName = checkbox.dataset.gateway;
+            if (!selections.gateways) {
+                selections.gateways = [];
+            }
+            selections.gateways.push(gatewayName);
+        });
+
+    // Collect individual item selections
+    document.querySelectorAll(".item-checkbox:checked").forEach((checkbox) => {
+        const entityType = checkbox.dataset.type;
+        const itemId = checkbox.dataset.id;
+        if (!selections[entityType]) {
+            selections[entityType] = [];
+        }
+        selections[entityType].push(itemId);
+    });
+
+    return selections;
+}
+
+/**
+ * Update selection count display
+ */
+function updateSelectionCount() {
+    const gatewayCount = document.querySelectorAll(
+        ".gateway-checkbox:checked",
+    ).length;
+    const itemCount = document.querySelectorAll(
+        ".item-checkbox:checked",
+    ).length;
+    const totalCount = gatewayCount + itemCount;
+
+    const countElement = document.getElementById("selection-count");
+    if (countElement) {
+        countElement.textContent = `${totalCount} items selected (${gatewayCount} gateways, ${itemCount} individual items)`;
+    }
+}
+
+/**
+ * Select all items
+ */
+function selectAllItems() {
+    document
+        .querySelectorAll(".gateway-checkbox, .item-checkbox")
+        .forEach((checkbox) => {
+            checkbox.checked = true;
+        });
+    updateSelectionCount();
+}
+
+/**
+ * Select no items
+ */
+function selectNoneItems() {
+    document
+        .querySelectorAll(".gateway-checkbox, .item-checkbox")
+        .forEach((checkbox) => {
+            checkbox.checked = false;
+        });
+    updateSelectionCount();
+}
+
+/**
+ * Select only custom items (not gateway items)
+ */
+function selectOnlyCustom() {
+    document.querySelectorAll(".gateway-checkbox").forEach((checkbox) => {
+        checkbox.checked = false;
+    });
+    document.querySelectorAll(".item-checkbox").forEach((checkbox) => {
+        checkbox.checked = true;
+    });
+    updateSelectionCount();
+}
+
+/**
+ * Reset import selection
+ */
+function resetImportSelection() {
+    const previewContainer = document.getElementById(
+        "import-preview-container",
+    );
+    if (previewContainer) {
+        previewContainer.remove();
+    }
+    window.currentImportPreview = null;
+}
+
+/* ---------------------------------------------------------------------------
+  Robust reloadAllResourceSections
+  - Replaces each section's full innerHTML with a server-rendered partial
+  - Restores saved initial markup on failure
+  - Re-runs initializers (Alpine, CodeMirror, select/pills, event handlers)
+--------------------------------------------------------------------------- */
+
+(function registerReloadAllResourceSections() {
+    // list of sections we manage
+    const SECTION_NAMES = [
+        "tools",
+        "resources",
+        "prompts",
+        "servers",
+        "gateways",
+        "catalog",
+    ];
+
+    // Save initial markup on first full load so we can restore exactly if needed
+    document.addEventListener("DOMContentLoaded", () => {
+        window.__initialSectionMarkup = window.__initialSectionMarkup || {};
+        SECTION_NAMES.forEach((s) => {
+            const el = document.getElementById(`${s}-section`);
+            if (el && !(s in window.__initialSectionMarkup)) {
+                // store the exact innerHTML produced by the server initially
+                window.__initialSectionMarkup[s] = el.innerHTML;
+            }
+        });
+    });
+
+    // Helper: try to re-run common initializers after a section's DOM is replaced
+    function reinitializeSection(sectionEl, sectionName) {
+        try {
+            if (!sectionEl) {
+                return;
+            }
+
+            // 1) Re-init Alpine for the new subtree (if Alpine is present)
+            try {
+                if (window.Alpine) {
+                    // For Alpine 3 use initTree if available
+                    if (typeof window.Alpine.initTree === "function") {
+                        window.Alpine.initTree(sectionEl);
+                    } else if (
+                        typeof window.Alpine.discoverAndRegisterComponents ===
+                        "function"
+                    ) {
+                        // fallback: attempt a component discovery if available
+                        window.Alpine.discoverAndRegisterComponents(sectionEl);
+                    }
+                }
+            } catch (err) {
+                console.warn(
+                    "Alpine re-init failed for section",
+                    sectionName,
+                    err,
+                );
+            }
+
+            // 2) Re-initialize tool/resource/pill helpers that expect DOM structure
+            try {
+                // these functions exist elsewhere in admin.js; call them if present
+                if (typeof initResourceSelect === "function") {
+                    // Many panels use specific ids — attempt to call generic initializers if they exist
+                    initResourceSelect(
+                        "associatedResources",
+                        "resource-pills",
+                        "resource-warn",
+                        10,
+                        null,
+                        null,
+                    );
+                }
+                if (typeof initToolSelect === "function") {
+                    initToolSelect(
+                        "associatedTools",
+                        "tool-pills",
+                        "tool-warn",
+                        10,
+                        null,
+                        null,
+                    );
+                }
+                // restore generic tool/resource selection areas if present
+                if (typeof initResourceSelect === "function") {
+                    // try specific common containers if present (safeGetElement suppresses warnings)
+                    const containers = [
+                        "edit-server-resources",
+                        "edit-server-tools",
+                    ];
+                    containers.forEach((cid) => {
+                        const c = document.getElementById(cid);
+                        if (c && typeof initResourceSelect === "function") {
+                            // caller may have different arg signature — best-effort call is OK
+                            // we don't want to throw here if arguments mismatch
+                            try {
+                                /* no args: assume function will find DOM by ids */ initResourceSelect();
+                            } catch (e) {
+                                /* ignore */
+                            }
+                        }
+                    });
+                }
+            } catch (err) {
+                console.warn("Select/pill reinit error", err);
+            }
+
+            // 3) Re-run integration & schema handlers which attach behaviour to new inputs
+            try {
+                if (typeof setupIntegrationTypeHandlers === "function") {
+                    setupIntegrationTypeHandlers();
+                }
+                if (typeof setupSchemaModeHandlers === "function") {
+                    setupSchemaModeHandlers();
+                }
+            } catch (err) {
+                console.warn("Integration/schema handler reinit failed", err);
+            }
+
+            // 4) Reinitialize CodeMirror editors within the replaced DOM (if CodeMirror used)
+            try {
+                if (window.CodeMirror) {
+                    // For any <textarea class="codemirror"> re-create or refresh editors
+                    const textareas = sectionEl.querySelectorAll("textarea");
+                    textareas.forEach((ta) => {
+                        // If the page previously attached a CodeMirror instance on same textarea,
+                        // the existing instance may have been stored on the element. If refresh available, refresh it.
+                        if (
+                            ta.CodeMirror &&
+                            typeof ta.CodeMirror.refresh === "function"
+                        ) {
+                            ta.CodeMirror.refresh();
+                        } else {
+                            // Create a new CodeMirror instance only when an explicit init function is present on page
+                            if (
+                                typeof window.createCodeMirrorForTextarea ===
+                                "function"
+                            ) {
+                                try {
+                                    window.createCodeMirrorForTextarea(ta);
+                                } catch (e) {
+                                    // ignore - not all textareas need CodeMirror
+                                }
+                            }
+                        }
+                    });
+                }
+            } catch (err) {
+                console.warn("CodeMirror reinit failed", err);
+            }
+
+            // 5) Re-attach generic event wiring that is expected by the UI (checkboxes, buttons)
+            try {
+                // checkbox-driven pill updates
+                const checkboxChangeEvent = new Event("change", {
+                    bubbles: true,
+                });
+                sectionEl
+                    .querySelectorAll('input[type="checkbox"]')
+                    .forEach((cb) => {
+                        // If there were checkbox-specific change functions on page, they will now re-run
+                        cb.dispatchEvent(checkboxChangeEvent);
+                    });
+
+                // Reconnect any HTMX triggers that expect a load event
+                if (window.htmx && typeof window.htmx.trigger === "function") {
+                    // find elements with data-htmx or that previously had an HTMX load
+                    const htmxTargets = sectionEl.querySelectorAll(
+                        "[hx-get], [hx-post], [data-hx-load]",
+                    );
+                    htmxTargets.forEach((el) => {
+                        try {
+                            window.htmx.trigger(el, "load");
+                        } catch (e) {
+                            /* ignore */
+                        }
+                    });
+                }
+            } catch (err) {
+                console.warn("Event wiring re-attach failed", err);
+            }
+
+            // 6) Accessibility / visual: force a small layout reflow, useful in some browsers
+            try {
+                // eslint-disable-next-line no-unused-expressions
+                sectionEl.offsetHeight; // read to force reflow
+            } catch (e) {
+                /* ignore */
+            }
+        } catch (err) {
+            console.error("Error reinitializing section", sectionName, err);
+        }
+    }
+
+    function updateSectionHeaders(teamId) {
+        const sections = [
+            "tools",
+            "resources",
+            "prompts",
+            "servers",
+            "gateways",
+        ];
+
+        sections.forEach((section) => {
+            const header = document.querySelector(
+                "#" + section + "-section h2",
+            );
+            if (header) {
+                // Remove existing team badge
+                const existingBadge = header.querySelector(".team-badge");
+                if (existingBadge) {
+                    existingBadge.remove();
+                }
+
+                // Add team badge if team is selected
+                if (teamId && teamId !== "") {
+                    const teamName = getTeamNameById(teamId);
+                    if (teamName) {
+                        const badge = document.createElement("span");
+                        badge.className =
+                            "team-badge inline-flex items-center px-2 py-1 ml-2 text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-full";
+                        badge.textContent = teamName;
+                        header.appendChild(badge);
+                    }
+                }
+            }
+        });
+    }
+
+    function getTeamNameById(teamId) {
+        // Get team name from Alpine.js data or fallback
+        const teamSelector = document.querySelector('[x-data*="selectedTeam"]');
+        if (
+            teamSelector &&
+            teamSelector._x_dataStack &&
+            teamSelector._x_dataStack[0].teams
+        ) {
+            const team = teamSelector._x_dataStack[0].teams.find(
+                (t) => t.id === teamId,
+            );
+            return team ? team.name : null;
+        }
+        return null;
+    }
+
+    // The exported function: reloadAllResourceSections
+    async function reloadAllResourceSections(teamId) {
+        const sections = [
+            "tools",
+            "resources",
+            "prompts",
+            "servers",
+            "gateways",
+        ];
+
+        // ensure there is a ROOT_PATH set
+        if (!window.ROOT_PATH) {
+            console.warn(
+                "ROOT_PATH not defined; aborting reloadAllResourceSections",
+            );
+            return;
+        }
+
+        // Iterate sections sequentially to avoid overloading the server and to ensure consistent order.
+        for (const section of sections) {
+            const sectionEl = document.getElementById(`${section}-section`);
+            if (!sectionEl) {
+                console.warn(`Section element not found: ${section}-section`);
+                continue;
+            }
+
+            // Build server partial URL (server should return the *full HTML fragment* for the section)
+            // Server endpoint pattern: /admin/sections/{section}?partial=true
+            let url = `${window.ROOT_PATH}/admin/sections/${section}?partial=true`;
+            if (teamId && teamId !== "") {
+                url += `&team_id=${encodeURIComponent(teamId)}`;
+            }
+
+            try {
+                const resp = await fetchWithTimeout(
+                    url,
+                    { credentials: "same-origin" },
+                    window.MCPGATEWAY_UI_TOOL_TEST_TIMEOUT || 60000,
+                );
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}`);
+                }
+                const html = await resp.text();
+
+                // Replace entire section's innerHTML with server-provided HTML to keep DOM identical.
+                // Use safeSetInnerHTML with isTrusted = true because this is server-rendered trusted content.
+                safeSetInnerHTML(sectionEl, html, true);
+
+                // After replacement, re-run local initializers so the new DOM behaves like initial load
+                reinitializeSection(sectionEl, section);
+            } catch (err) {
+                console.error(
+                    `Failed to load section ${section} from server:`,
+                    err,
+                );
+
+                // Restore the original markup exactly as it was on initial load (fallback)
+                if (
+                    window.__initialSectionMarkup &&
+                    window.__initialSectionMarkup[section]
+                ) {
+                    sectionEl.innerHTML =
+                        window.__initialSectionMarkup[section];
+                    // Re-run initializers on restored markup as well
+                    reinitializeSection(sectionEl, section);
+                    console.log(
+                        `Restored initial markup for section ${section}`,
+                    );
+                } else {
+                    // No fallback available: leave existing DOM intact and show error to console
+                    console.warn(
+                        `No saved initial markup for section ${section}; leaving DOM untouched`,
+                    );
+                }
+            }
+        }
+
+        // Update headers (team badges) after reload
+        try {
+            if (typeof updateSectionHeaders === "function") {
+                updateSectionHeaders(teamId);
+            }
+        } catch (err) {
+            console.warn("updateSectionHeaders failed after reload", err);
+        }
+
+        console.log("✓ reloadAllResourceSections completed");
+    }
+
+    // Export to global to keep old callers working
+    window.reloadAllResourceSections = reloadAllResourceSections;
+})();
+
+// Expose selective import functions to global scope
+window.previewImport = previewImport;
+window.handleSelectiveImport = handleSelectiveImport;
+window.displayImportPreview = displayImportPreview;
+window.collectUserSelections = collectUserSelections;
+window.updateSelectionCount = updateSelectionCount;
+window.selectAllItems = selectAllItems;
+window.selectNoneItems = selectNoneItems;
+window.selectOnlyCustom = selectOnlyCustom;
+window.resetImportSelection = resetImportSelection;

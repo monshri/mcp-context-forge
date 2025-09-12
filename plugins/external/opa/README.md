@@ -31,13 +31,13 @@ plugins:
     description: "An OPA plugin that enforces rego policies on requests and allows/denies requests as per policies"
     version: "0.1.0"
     author: "Shriti Priya"
-    hooks: ["prompt_pre_fetch", "prompt_post_fetch", "tool_pre_invoke", "tool_post_invoke"]
+    hooks: ["tool_pre_invoke"]
     tags: ["plugin"]
     mode: "enforce"  # enforce | permissive | disabled
     priority: 10
     applied_to:
       tools:
-        - name: "fast-time-git-status"
+        - tool_name: "fast-time-git-status"
           context:
             - "global.opa_policy_context.git_context"
           extensions:

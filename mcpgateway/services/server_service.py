@@ -15,7 +15,6 @@ It also publishes event notifications for server changes.
 import asyncio
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional
-import uuid as uuid_module
 
 # Third-Party
 import httpx
@@ -34,6 +33,7 @@ from mcpgateway.db import Tool as DbTool
 from mcpgateway.schemas import ServerCreate, ServerMetrics, ServerRead, ServerUpdate, TopPerformer
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.utils.metrics_common import build_top_performers
+from mcpgateway.utils.sqlalchemy_modifier import json_contains_expr
 
 # Initialize logging service first
 logging_service = LoggingService()
@@ -51,38 +51,47 @@ class ServerNotFoundError(ServerError):
 class ServerNameConflictError(ServerError):
     """Raised when a server name conflicts with an existing one."""
 
-    def __init__(self, name: str, is_active: bool = True, server_id: Optional[int] = None):
-        """Initialize a ServerNameConflictError exception.
+    def __init__(self, name: str, is_active: bool = True, server_id: Optional[int] = None, visibility: str = "public") -> None:
+        """
+        Initialize a ServerNameConflictError exception.
 
-        Creates an exception that indicates a server name conflict, with additional
-        context about whether the conflicting server is active and its ID if known.
-        The error message is customized based on the server's active status.
+        This exception indicates a server name conflict, with additional context about visibility,
+        whether the conflicting server is active, and its ID if known. The error message starts
+        with the visibility information.
+
+        Visibility rules:
+            - public: Restricts server names globally (across all teams).
+            - team: Restricts server names only within the same team.
 
         Args:
             name: The server name that caused the conflict.
-            is_active: Whether the conflicting server is currently active.
-                    Defaults to True.
-            server_id: The ID of the conflicting server, if known.
-                    Only included in message for inactive servers.
+            is_active: Whether the conflicting server is currently active. Defaults to True.
+            server_id: The ID of the conflicting server, if known. Only included in message for inactive servers.
+            visibility: The visibility of the conflicting server (e.g., "public", "private", "team").
 
         Examples:
             >>> error = ServerNameConflictError("My Server")
             >>> str(error)
-            'Server already exists with name: My Server'
+            'Public Server already exists with name: My Server'
             >>> error = ServerNameConflictError("My Server", is_active=False, server_id=123)
             >>> str(error)
-            'Server already exists with name: My Server (currently inactive, ID: 123)'
-            >>> error.name
-            'My Server'
+            'Public Server already exists with name: My Server (currently inactive, ID: 123)'
             >>> error.is_active
             False
             >>> error.server_id
             123
+            >>> error = ServerNameConflictError("My Server", is_active=False, visibility="team")
+            >>> str(error)
+            'Team Server already exists with name: My Server (currently inactive, ID: None)'
+            >>> error.is_active
+            False
+            >>> error.server_id is None
+            True
         """
         self.name = name
         self.is_active = is_active
         self.server_id = server_id
-        message = f"Server already exists with name: {name}"
+        message = f"{visibility.capitalize()} Server already exists with name: {name}"
         if not is_active:
             message += f" (currently inactive, ID: {server_id})"
         super().__init__(message)
@@ -182,6 +191,27 @@ class ServerService:
 
         Returns:
             ServerRead: The Pydantic model representing the server, including aggregated metrics.
+
+        Examples:
+            >>> from types import SimpleNamespace
+            >>> from datetime import datetime, timezone
+            >>> svc = ServerService()
+            >>> now = datetime.now(timezone.utc)
+            >>> # Fake metric objects
+            >>> m1 = SimpleNamespace(is_success=True, response_time=0.2, timestamp=now)
+            >>> m2 = SimpleNamespace(is_success=False, response_time=0.4, timestamp=now)
+            >>> server = SimpleNamespace(
+            ...     id='s1', name='S', description=None, icon=None,
+            ...     created_at=now, updated_at=now, is_active=True,
+            ...     associated_tools=[], associated_resources=[], associated_prompts=[], associated_a2a_agents=[],
+            ...     tags=[], metrics=[m1, m2],
+            ...     tools=[], resources=[], prompts=[], a2a_agents=[]
+            ... )
+            >>> result = svc._convert_server_to_read(server)
+            >>> result.metrics.total_executions
+            2
+            >>> result.metrics.successful_executions
+            1
         """
         server_dict = server.__dict__.copy()
         server_dict.pop("_sa_instance_state", None)
@@ -261,7 +291,9 @@ class ServerService:
             "a2a_agents": a2a_agents or [],
         }
 
-    async def register_server(self, db: Session, server_in: ServerCreate) -> ServerRead:
+    async def register_server(
+        self, db: Session, server_in: ServerCreate, created_by: Optional[str] = None, team_id: Optional[str] = None, owner_email: Optional[str] = None, visibility: str = "private"
+    ) -> ServerRead:
         """
         Register a new server in the catalog and validate that all associated items exist.
 
@@ -279,12 +311,17 @@ class ServerService:
             db (Session): The SQLAlchemy database session.
             server_in (ServerCreate): The server creation schema containing server details and lists of
                 associated tool, resource, and prompt IDs (as strings).
+            created_by (Optional[str]): Email of the user creating the server, used for ownership tracking.
+            team_id (Optional[str]): Team ID to assign the server to.
+            owner_email (Optional[str]): Email of the user who owns this server.
+            visibility (str): Server visibility level (private, team, public).
 
         Returns:
             ServerRead: The newly created server, with associated item IDs.
 
         Raises:
             IntegrityError: If a database integrity error occurs.
+            ServerNameConflictError: If a server name conflict occurs (public or team visibility).
             ServerError: If any associated tool, resource, or prompt does not exist, or if any other registration error occurs.
 
         Examples:
@@ -314,13 +351,26 @@ class ServerService:
                 icon=server_in.icon,
                 is_active=True,
                 tags=server_in.tags or [],
+                # Team scoping fields - use schema values if provided, otherwise fallback to parameters
+                team_id=getattr(server_in, "team_id", None) or team_id,
+                owner_email=getattr(server_in, "owner_email", None) or owner_email or created_by,
+                visibility=getattr(server_in, "visibility", None) or visibility,
             )
-
+            # Check for existing server with the same name
+            if visibility.lower() == "public":
+                # Check for existing public server with the same name
+                existing_server = db.execute(select(DbServer).where(DbServer.name == server_in.name, DbServer.visibility == "public")).scalar_one_or_none()
+                if existing_server:
+                    raise ServerNameConflictError(server_in.name, is_active=existing_server.is_active, server_id=existing_server.id, visibility=existing_server.visibility)
+            elif visibility.lower() == "team" and team_id:
+                # Check for existing team server with the same name
+                existing_server = db.execute(select(DbServer).where(DbServer.name == server_in.name, DbServer.visibility == "team", DbServer.team_id == team_id)).scalar_one_or_none()
+                if existing_server:
+                    raise ServerNameConflictError(server_in.name, is_active=existing_server.is_active, server_id=existing_server.id, visibility=existing_server.visibility)
             # Set custom UUID if provided
             if server_in.id:
-                # Normalize UUID to hex format (no dashes) to match database storage
-                normalized_uuid = str(uuid_module.UUID(server_in.id)).replace("-", "")
-                db_server.id = normalized_uuid
+                logger.info(f"Setting custom UUID for server: {server_in.id}")
+                db_server.id = server_in.id
             db.add(db_server)
 
             # Associate tools, verifying each exists.
@@ -394,6 +444,9 @@ class ServerService:
             db.rollback()
             logger.error(f"IntegrityErrors in group: {ie}")
             raise ie
+        except ServerNameConflictError as se:
+            db.rollback()
+            raise se
         except Exception as ex:
             db.rollback()
             raise ServerError(f"Failed to register server: {str(ex)}")
@@ -428,12 +481,81 @@ class ServerService:
 
         # Add tag filtering if tags are provided
         if tags:
-            # Filter servers that have any of the specified tags
-            tag_conditions = []
-            for tag in tags:
-                tag_conditions.append(func.json_contains(DbServer.tags, f'"{tag}"'))
-            if tag_conditions:
-                query = query.where(func.or_(*tag_conditions))
+            query = query.where(json_contains_expr(db, DbServer.tags, tags, match_any=True))
+
+        servers = db.execute(query).scalars().all()
+        return [self._convert_server_to_read(s) for s in servers]
+
+    async def list_servers_for_user(
+        self, db: Session, user_email: str, team_id: Optional[str] = None, visibility: Optional[str] = None, include_inactive: bool = False, skip: int = 0, limit: int = 100
+    ) -> List[ServerRead]:
+        """
+        List servers user has access to with team filtering.
+
+        Args:
+            db: Database session
+            user_email: Email of the user requesting servers
+            team_id: Optional team ID to filter by specific team
+            visibility: Optional visibility filter (private, team, public)
+            include_inactive: Whether to include inactive servers
+            skip: Number of servers to skip for pagination
+            limit: Maximum number of servers to return
+
+        Returns:
+            List[ServerRead]: Servers the user has access to
+        """
+        # First-Party
+        from mcpgateway.services.team_management_service import TeamManagementService  # pylint: disable=import-outside-toplevel
+
+        # Build query following existing patterns from list_servers()
+        query = select(DbServer)
+
+        # Apply active/inactive filter
+        if not include_inactive:
+            query = query.where(DbServer.is_active)
+
+        if team_id:
+            # Filter by specific team
+            query = query.where(DbServer.team_id == team_id)
+
+            # Validate user has access to team
+            team_service = TeamManagementService(db)
+            user_teams = await team_service.get_user_teams(user_email)
+            team_ids = [team.id for team in user_teams]
+
+            if team_id not in team_ids:
+                return []  # No access to team
+        else:
+            # Get user's accessible teams
+            team_service = TeamManagementService(db)
+            user_teams = await team_service.get_user_teams(user_email)
+            team_ids = [team.id for team in user_teams]
+
+            # Build access conditions following existing patterns
+            # Third-Party
+            from sqlalchemy import and_, or_  # pylint: disable=import-outside-toplevel
+
+            access_conditions = []
+
+            # 1. User's personal resources (owner_email matches)
+            access_conditions.append(DbServer.owner_email == user_email)
+
+            # 2. Team resources where user is member
+            if team_ids:
+                access_conditions.append(and_(DbServer.team_id.in_(team_ids), DbServer.visibility.in_(["team", "public"])))
+
+            # 3. Public resources (if visibility allows)
+            access_conditions.append(DbServer.visibility == "public")
+
+            query = query.where(or_(*access_conditions))
+
+        # Apply visibility filter if specified
+        if visibility:
+            query = query.where(DbServer.visibility == visibility)
+
+        query = query.where(~((DbServer.owner_email != user_email) & (DbServer.visibility == "private")))
+        # Apply pagination following existing patterns
+        query = query.offset(skip).limit(limit)
 
         servers = db.execute(query).scalars().all()
         return [self._convert_server_to_read(s) for s in servers]
@@ -523,15 +645,20 @@ class ServerService:
             if not server:
                 raise ServerNotFoundError(f"Server not found: {server_id}")
 
-            # Check for name conflict if name is being changed
+            # Check for name conflict if name is being changed and visibility is public
             if server_update.name and server_update.name != server.name:
-                conflict = db.execute(select(DbServer).where(DbServer.name == server_update.name).where(DbServer.id != server_id)).scalar_one_or_none()
-                if conflict:
-                    raise ServerNameConflictError(
-                        server_update.name,
-                        is_active=conflict.is_active,
-                        server_id=conflict.id,
-                    )
+                visibility = server_update.visibility or server.visibility
+                team_id = server_update.team_id or server.team_id
+                if visibility.lower() == "public":
+                    # Check for existing public server with the same name
+                    existing_server = db.execute(select(DbServer).where(DbServer.name == server_update.name, DbServer.visibility == "public")).scalar_one_or_none()
+                    if existing_server:
+                        raise ServerNameConflictError(server_update.name, is_active=existing_server.is_active, server_id=existing_server.id, visibility=existing_server.visibility)
+                elif visibility.lower() == "team" and team_id:
+                    # Check for existing team server with the same name
+                    existing_server = db.execute(select(DbServer).where(DbServer.name == server_update.name, DbServer.visibility == "team", DbServer.team_id == team_id)).scalar_one_or_none()
+                    if existing_server:
+                        raise ServerNameConflictError(server_update.name, is_active=existing_server.is_active, server_id=existing_server.id, visibility=existing_server.visibility)
 
             # Update simple fields
             if server_update.id is not None and server_update.id != server.id:
@@ -546,6 +673,15 @@ class ServerService:
                 server.description = server_update.description
             if server_update.icon is not None:
                 server.icon = server_update.icon
+
+            if server_update.visibility is not None:
+                server.visibility = server_update.visibility
+
+            if server_update.team_id is not None:
+                server.team_id = server_update.team_id
+
+            if server_update.owner_email is not None:
+                server.owner_email = server_update.owner_email
 
             # Update associated tools if provided
             if server_update.associated_tools is not None:

@@ -54,7 +54,7 @@ import httpx
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamablehttp_client
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -85,6 +85,7 @@ from mcpgateway.utils.create_slug import slugify
 from mcpgateway.utils.display_name import generate_display_name
 from mcpgateway.utils.retry_manager import ResilientHttpClient
 from mcpgateway.utils.services_auth import decode_auth, encode_auth
+from mcpgateway.utils.sqlalchemy_modifier import json_contains_expr
 
 # Initialize logging service first
 logging_service = LoggingService()
@@ -401,6 +402,9 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
         created_from_ip: Optional[str] = None,
         created_via: Optional[str] = None,
         created_user_agent: Optional[str] = None,
+        team_id: Optional[str] = None,
+        owner_email: Optional[str] = None,
+        visibility: Optional[str] = None,
     ) -> GatewayRead:
         """Register a new gateway.
 
@@ -411,6 +415,9 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
             created_from_ip: IP address of creator
             created_via: Creation method (ui, api, federation)
             created_user_agent: User agent of creation request
+            team_id (Optional[str]): Team ID to assign the gateway to.
+            owner_email (Optional[str]): Email of the user who owns this gateway.
+            visibility (Optional[str]): Gateway visibility level (private, team, public).
 
         Returns:
             Created gateway information
@@ -440,6 +447,7 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
             ... except Exception:
             ...     pass
         """
+        visibility = "public" if visibility not in ("private", "team", "public") else visibility
         try:
             # Check for name conflicts (both active and inactive)
             existing_gateway = db.execute(select(DbGateway).where(DbGateway.name == gateway.name)).scalar_one_or_none()
@@ -488,6 +496,10 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                     created_user_agent=created_user_agent,
                     federation_source=gateway.name,
                     version=1,
+                    # Inherit team assignment from gateway
+                    team_id=team_id,
+                    owner_email=owner_email,
+                    visibility=visibility,
                 )
                 for tool in tools
             ]
@@ -507,6 +519,10 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                     created_user_agent=created_user_agent,
                     federation_source=gateway.name,
                     version=1,
+                    # Inherit team assignment from gateway
+                    team_id=team_id,
+                    owner_email=owner_email,
+                    visibility=visibility,
                 )
                 for resource in resources
             ]
@@ -525,6 +541,10 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                     created_user_agent=created_user_agent,
                     federation_source=gateway.name,
                     version=1,
+                    # Inherit team assignment from gateway
+                    team_id=team_id,
+                    owner_email=owner_email,
+                    visibility=visibility,
                 )
                 for prompt in prompts
             ]
@@ -542,6 +562,7 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                 auth_type=auth_type,
                 auth_value=auth_value,
                 oauth_config=oauth_config,
+                passthrough_headers=gateway.passthrough_headers,
                 tools=tools,
                 resources=db_resources,
                 prompts=db_prompts,
@@ -551,6 +572,10 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                 created_via=created_via or "api",
                 created_user_agent=created_user_agent,
                 version=1,
+                # Team scoping fields
+                team_id=team_id,
+                owner_email=owner_email,
+                visibility=visibility,
             )
 
             # Add to DB
@@ -653,23 +678,14 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                         continue
 
                     try:
-                        db_tool = DbTool(
-                            original_name=tool.name,
-                            custom_name=tool.name,
-                            custom_name_slug=slugify(tool.name),
-                            display_name=generate_display_name(tool.name),
-                            url=gateway.url.rstrip("/"),
-                            description=tool.description,
-                            integration_type="MCP",  # Gateway-discovered tools are MCP type
-                            request_type=tool.request_type,
-                            headers=tool.headers,
-                            input_schema=tool.input_schema,
-                            annotations=tool.annotations,
-                            jsonpath_filter=tool.jsonpath_filter,
-                            auth_type=gateway.auth_type,
-                            auth_value=gateway.auth_value,
-                            gateway=gateway,  # attach relationship to avoid NoneType during flush
+                        db_tool = self._create_db_tool(
+                            tool=tool,
+                            gateway=gateway,
+                            created_by="system",
+                            created_via="oauth",
                         )
+                        # Attach relationship to avoid NoneType during flush
+                        db_tool.gateway = gateway
                         tools_to_add.append(db_tool)
                     except Exception as e:
                         logger.warning(f"Failed to create DbTool for tool {getattr(tool, 'name', 'unknown')}: {e}")
@@ -689,12 +705,13 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
             logger.error(f"Failed to fetch tools after OAuth for gateway {gateway_id}: {e}")
             raise GatewayConnectionError(f"Failed to fetch tools after OAuth: {str(e)}")
 
-    async def list_gateways(self, db: Session, include_inactive: bool = False) -> List[GatewayRead]:
+    async def list_gateways(self, db: Session, include_inactive: bool = False, tags: Optional[List[str]] = None) -> List[GatewayRead]:
         """List all registered gateways.
 
         Args:
             db: Database session
             include_inactive: Whether to include inactive gateways
+            tags (Optional[List[str]]): Filter resources by tags. If provided, only resources with at least one matching tag will be returned.
 
         Returns:
             List of registered gateways
@@ -731,6 +748,9 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
         if not include_inactive:
             query = query.where(DbGateway.enabled)
 
+        if tags:
+            query = query.where(json_contains_expr(db, DbGateway.tags, tags, match_any=True))
+
         gateways = db.execute(query).scalars().all()
 
         # print("******************************************************************")
@@ -747,6 +767,80 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
         #         # print(f"Gateway auth_type: {g['auth_type']}")
         # print("******************************************************************")
 
+        return [GatewayRead.model_validate(g).masked() for g in gateways]
+
+    async def list_gateways_for_user(
+        self, db: Session, user_email: str, team_id: Optional[str] = None, visibility: Optional[str] = None, include_inactive: bool = False, skip: int = 0, limit: int = 100
+    ) -> List[GatewayRead]:
+        """
+        List gateways user has access to with team filtering.
+
+        Args:
+            db: Database session
+            user_email: Email of the user requesting gateways
+            team_id: Optional team ID to filter by specific team
+            visibility: Optional visibility filter (private, team, public)
+            include_inactive: Whether to include inactive gateways
+            skip: Number of gateways to skip for pagination
+            limit: Maximum number of gateways to return
+
+        Returns:
+            List[GatewayRead]: Gateways the user has access to
+        """
+        # Build query following existing patterns from list_gateways()
+        query = select(DbGateway)
+
+        # Apply active/inactive filter
+        if not include_inactive:
+            query = query.where(DbGateway.enabled.is_(True))
+
+        if team_id:
+            # Filter by specific team
+            query = query.where(DbGateway.team_id == team_id)
+
+            # Validate user has access to team
+            # First-Party
+            from mcpgateway.services.team_management_service import TeamManagementService  # pylint: disable=import-outside-toplevel
+
+            team_service = TeamManagementService(db)
+            user_teams = await team_service.get_user_teams(user_email)
+            team_ids = [team.id for team in user_teams]
+
+            if team_id not in team_ids:
+                return []  # No access to team
+
+        else:
+            # Get user's accessible teams
+            # First-Party
+            from mcpgateway.services.team_management_service import TeamManagementService  # pylint: disable=import-outside-toplevel
+
+            team_service = TeamManagementService(db)
+            user_teams = await team_service.get_user_teams(user_email)
+            team_ids = [team.id for team in user_teams]
+
+            # Build access conditions following existing patterns
+            access_conditions = []
+            # 1. User's personal resources (owner_email matches)
+            access_conditions.append(DbGateway.owner_email == user_email)
+            # 2. Team resources where user is member
+            if team_ids:
+                access_conditions.append(and_(DbGateway.team_id.in_(team_ids), DbGateway.visibility.in_(["team", "public"])))
+            # 3. Public resources (if visibility allows)
+            access_conditions.append(DbGateway.visibility == "public")
+
+            query = query.where(or_(*access_conditions))
+
+        # Filter out private gateways not owned by the user
+        query = query.where(~((DbGateway.owner_email != user_email) & (DbGateway.visibility == "private")))
+
+        # Apply visibility filter if specified
+        if visibility:
+            query = query.where(DbGateway.visibility == visibility)
+
+        # Apply pagination following existing patterns
+        query = query.offset(skip).limit(limit)
+
+        gateways = db.execute(query).scalars().all()
         return [GatewayRead.model_validate(g).masked() for g in gateways]
 
     async def update_gateway(self, db: Session, gateway_id: str, gateway_update: GatewayUpdate, include_inactive: bool = True) -> GatewayRead:
@@ -768,7 +862,7 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
             IntegrityError: If there is a database integrity error
             ValidationError: If validation fails
         """
-        try:
+        try:  # pylint: disable=too-many-nested-blocks
             # Find gateway
             gateway = db.get(DbGateway, gateway_id)
             if not gateway:
@@ -799,6 +893,21 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                     gateway.transport = gateway_update.transport
                 if gateway_update.tags is not None:
                     gateway.tags = gateway_update.tags
+                if gateway_update.visibility is not None:
+                    gateway.visibility = gateway_update.visibility
+                if gateway_update.visibility is not None:
+                    gateway.visibility = gateway_update.visibility
+                if gateway_update.passthrough_headers is not None:
+                    if isinstance(gateway_update.passthrough_headers, list):
+                        gateway.passthrough_headers = gateway_update.passthrough_headers
+                    else:
+                        if isinstance(gateway_update.passthrough_headers, str):
+                            parsed = [h.strip() for h in gateway_update.passthrough_headers.split(",") if h.strip()]
+                            gateway.passthrough_headers = parsed
+                        else:
+                            raise GatewayError("Invalid passthrough_headers format: must be list[str] or comma-separated string")
+
+                    logger.info("Updated passthrough_headers for gateway {gateway.id}: {gateway.passthrough_headers}")
 
                 if getattr(gateway, "auth_type", None) is not None:
                     gateway.auth_type = gateway_update.auth_type
@@ -834,25 +943,51 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                         new_resource_uris = [resource.uri for resource in resources]
                         new_prompt_names = [prompt.name for prompt in prompts]
 
-                        # Update tools
                         for tool in tools:
                             existing_tool = db.execute(select(DbTool).where(DbTool.original_name == tool.name).where(DbTool.gateway_id == gateway_id)).scalar_one_or_none()
-                            if not existing_tool:
+
+                            # If the tool exists, check for changes
+                            if existing_tool:
+                                # Compare each field and update if necessary
+                                fields_to_update = False
+
+                                # Checking if any field has changed
+                                # pylint: disable=too-many-boolean-expressions
+                                if (
+                                    existing_tool.url != gateway.url
+                                    or existing_tool.description != tool.description
+                                    or existing_tool.integration_type != "MCP"
+                                    or existing_tool.request_type != tool.request_type
+                                    or existing_tool.headers != tool.headers
+                                    or existing_tool.input_schema != tool.input_schema
+                                    or existing_tool.jsonpath_filter != tool.jsonpath_filter
+                                    or existing_tool.auth_type != gateway.auth_type
+                                    or existing_tool.auth_value != gateway.auth_value
+                                    or existing_tool.visibility != gateway.visibility
+                                ):
+                                    # pylint: enable=too-many-boolean-expressions
+                                    fields_to_update = True
+                                # If there are changes, update the existing tool
+                                if fields_to_update:
+                                    existing_tool.url = gateway.url
+                                    existing_tool.description = tool.description
+                                    existing_tool.integration_type = "MCP"
+                                    existing_tool.request_type = tool.request_type
+                                    existing_tool.headers = tool.headers
+                                    existing_tool.input_schema = tool.input_schema
+                                    existing_tool.jsonpath_filter = tool.jsonpath_filter
+                                    existing_tool.auth_type = gateway.auth_type
+                                    existing_tool.auth_value = gateway.auth_value
+                                    existing_tool.visibility = gateway.visibility
+
+                            # If the tool doesn't exist, create a new one
+                            else:
                                 gateway.tools.append(
-                                    DbTool(
-                                        original_name=tool.name,
-                                        custom_name=tool.custom_name,
-                                        custom_name_slug=slugify(tool.custom_name),
-                                        display_name=generate_display_name(tool.custom_name),
-                                        url=gateway.url,
-                                        description=tool.description,
-                                        integration_type="MCP",  # Gateway-discovered tools are MCP type
-                                        request_type=tool.request_type,
-                                        headers=tool.headers,
-                                        input_schema=tool.input_schema,
-                                        jsonpath_filter=tool.jsonpath_filter,
-                                        auth_type=gateway.auth_type,
-                                        auth_value=gateway.auth_value,
+                                    self._create_db_tool(
+                                        tool=tool,
+                                        gateway=gateway,
+                                        created_by="system",
+                                        created_via="update",
                                     )
                                 )
 
@@ -867,6 +1002,7 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                                         description=resource.description,
                                         mime_type=resource.mime_type,
                                         template=resource.template,
+                                        visibility=gateway.visibility,
                                     )
                                 )
 
@@ -880,6 +1016,7 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                                         description=prompt.description,
                                         template=prompt.template if hasattr(prompt, "template") else "",
                                         argument_schema={},  # Use argument_schema instead of arguments
+                                        visibility=gateway.visibility,
                                     )
                                 )
 
@@ -1012,10 +1149,10 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                 gateway.enabled = activate
                 gateway.reachable = reachable
                 gateway.updated_at = datetime.now(timezone.utc)
-
                 # Update tracking
                 if activate and reachable:
                     self._active_gateways.add(gateway.url)
+
                     # Try to initialize if activating
                     try:
                         capabilities, tools, resources, prompts = await self._initialize_gateway(gateway.url, gateway.auth_value, gateway.transport, gateway.auth_type, gateway.oauth_config)
@@ -1028,20 +1165,11 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                             existing_tool = db.execute(select(DbTool).where(DbTool.original_name == tool.name).where(DbTool.gateway_id == gateway_id)).scalar_one_or_none()
                             if not existing_tool:
                                 gateway.tools.append(
-                                    DbTool(
-                                        original_name=tool.name,
-                                        custom_name=tool.custom_name,
-                                        custom_name_slug=slugify(tool.custom_name),
-                                        display_name=generate_display_name(tool.custom_name),
-                                        url=gateway.url,
-                                        description=tool.description,
-                                        integration_type="MCP",  # Gateway-discovered tools are MCP type
-                                        request_type=tool.request_type,
-                                        headers=tool.headers,
-                                        input_schema=tool.input_schema,
-                                        jsonpath_filter=tool.jsonpath_filter,
-                                        auth_type=gateway.auth_type,
-                                        auth_value=gateway.auth_value,
+                                    self._create_db_tool(
+                                        tool=tool,
+                                        gateway=gateway,
+                                        created_by="system",
+                                        created_via="rediscovery",
                                     )
                                 )
 
@@ -1843,6 +1971,56 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
         }
         await self._publish_event(event)
 
+    def _create_db_tool(
+        self,
+        tool: ToolCreate,
+        gateway: DbGateway,
+        created_by: Optional[str] = None,
+        created_from_ip: Optional[str] = None,
+        created_via: Optional[str] = None,
+        created_user_agent: Optional[str] = None,
+    ) -> DbTool:
+        """Create a DbTool with consistent federation metadata across all scenarios.
+
+        Args:
+            tool: Tool creation schema
+            gateway: Gateway database object
+            created_by: Username who created/updated this tool
+            created_from_ip: IP address of creator
+            created_via: Creation method (ui, api, federation, rediscovery)
+            created_user_agent: User agent of creation request
+
+        Returns:
+            DbTool: Consistently configured database tool object
+        """
+        return DbTool(
+            original_name=tool.name,
+            custom_name=tool.name,
+            custom_name_slug=slugify(tool.name),
+            display_name=generate_display_name(tool.name),
+            url=gateway.url,
+            description=tool.description,
+            integration_type="MCP",  # Gateway-discovered tools are MCP type
+            request_type=tool.request_type,
+            headers=tool.headers,
+            input_schema=tool.input_schema,
+            annotations=tool.annotations,
+            jsonpath_filter=tool.jsonpath_filter,
+            auth_type=gateway.auth_type,
+            auth_value=gateway.auth_value,
+            # Federation metadata - consistent across all scenarios
+            created_by=created_by or "system",
+            created_from_ip=created_from_ip,
+            created_via=created_via or "federation",
+            created_user_agent=created_user_agent,
+            federation_source=gateway.name,
+            version=1,
+            # Inherit team assignment and visibility from gateway
+            team_id=gateway.team_id,
+            owner_email=gateway.owner_email,
+            visibility="public",  # Federated tools should be public for discovery
+        )
+
     async def _publish_event(self, event: Dict[str, Any]) -> None:
         """Publish event to all subscribers.
 
@@ -1904,7 +2082,6 @@ class GatewayService:  # pylint: disable=too-many-instance-attributes
                     tools = [ToolCreate.model_validate(tool) for tool in tools]
                     if tools:
                         logger.info(f"Fetched {len(tools)} tools from gateway")
-
                     # Fetch resources if supported
                     resources = []
                     logger.debug(f"Checking for resources support: {capabilities.get('resources')}")

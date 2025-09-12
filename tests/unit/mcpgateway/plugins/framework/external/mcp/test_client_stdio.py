@@ -6,27 +6,31 @@ Authors: Mihai Criveti
 
 Tests for external client on stdio.
 """
+# Standard
 from contextlib import AsyncExitStack
 import json
 import os
 import re
 import sys
 from typing import Optional
-import pytest
+
+# Third-Party
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+import pytest
 
+# First-Party
 from mcpgateway.models import Message, PromptResult, ResourceContent, Role, TextContent
 from mcpgateway.plugins.framework import (
     ConfigLoader,
     GlobalContext,
     PluginConfig,
     PluginError,
+    PluginContext,
     PluginLoader,
     PluginManager,
-    PluginContext,
-    PromptPrehookPayload,
     PromptPosthookPayload,
+    PromptPrehookPayload,
     ResourcePostFetchPayload,
     ResourcePreFetchPayload,
     ToolPostInvokePayload,

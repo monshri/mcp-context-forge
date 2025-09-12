@@ -7,6 +7,7 @@ Authors: Mihai Criveti
 Tests for errors module.
 """
 
+# Third-Party
 import pytest
 import re
 from mcpgateway.plugins.framework.errors import convert_exception_to_error
