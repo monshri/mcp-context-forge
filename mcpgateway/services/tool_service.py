@@ -42,9 +42,13 @@ from mcpgateway.db import Gateway as DbGateway
 from mcpgateway.db import server_tool_association
 from mcpgateway.db import Tool as DbTool
 from mcpgateway.db import ToolMetric
-from mcpgateway.models import TextContent, ToolResult
+from mcpgateway.models import Gateway as PydanticGateway
+from mcpgateway.models import TextContent
+from mcpgateway.models import Tool as PydanticTool
+from mcpgateway.models import ToolResult
 from mcpgateway.observability import create_span
-from mcpgateway.plugins.framework import GlobalContext, PluginManager, PluginViolationError, ToolPostInvokePayload, ToolPreInvokePayload
+from mcpgateway.plugins.framework import GlobalContext, HttpHeaderPayload, PluginError, PluginManager, PluginViolationError, ToolPostInvokePayload, ToolPreInvokePayload
+from mcpgateway.plugins.framework.constants import GATEWAY_METADATA, TOOL_METADATA
 from mcpgateway.schemas import ToolCreate, ToolRead, ToolUpdate, TopPerformer
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.oauth_manager import OAuthManager
@@ -805,6 +809,7 @@ class ToolService:
         server_id = gateway_id if isinstance(gateway_id, str) else "unknown"
         global_context = GlobalContext(request_id=request_id, server_id=server_id, tenant_id=None)
 
+<<<<<<< HEAD
         if self._plugin_manager:
             pre_result, context_table = await self._plugin_manager.tool_pre_invoke(payload=ToolPreInvokePayload(name=name, args=arguments), global_context=global_context, local_contexts=None)
 
@@ -824,6 +829,8 @@ class ToolService:
                 name = payload.name
                 arguments = payload.args
 
+=======
+>>>>>>> remotes/teryl/feat/http_plugin_hooks
         start_time = time.monotonic()
         success = False
         error_message = None
@@ -862,6 +869,22 @@ class ToolService:
                     # Only call get_passthrough_headers if we actually have request headers to pass through
                     if request_headers:
                         headers = get_passthrough_headers(request_headers, headers, db)
+
+                    if self._plugin_manager:
+                        tool_metadata = PydanticTool.model_validate(tool)
+                        global_context.metadata[TOOL_METADATA] = tool_metadata
+                        pre_result, context_table = await self._plugin_manager.tool_pre_invoke(
+                            payload=ToolPreInvokePayload(name=name, args=arguments, headers=HttpHeaderPayload(headers)),
+                            global_context=global_context,
+                            local_contexts=None,
+                            violations_as_exceptions=True,
+                        )
+                        if pre_result.modified_payload:
+                            payload = pre_result.modified_payload
+                            name = payload.name
+                            arguments = payload.args
+                            if payload.headers:
+                                headers = payload.headers.model_dump()
 
                     # Build the payload based on integration type
                     payload = arguments.copy()
@@ -991,6 +1014,24 @@ class ToolService:
                     tool_gateway_id = tool.gateway_id
                     tool_gateway = db.execute(select(DbGateway).where(DbGateway.id == tool_gateway_id).where(DbGateway.enabled)).scalar_one_or_none()
 
+                    if self._plugin_manager:
+                        tool_metadata = PydanticTool.model_validate(tool)
+                        gateway_metadata = PydanticGateway.model_validate(tool_gateway)
+                        global_context.metadata[TOOL_METADATA] = tool_metadata
+                        global_context.metadata[GATEWAY_METADATA] = gateway_metadata
+                        pre_result, context_table = await self._plugin_manager.tool_pre_invoke(
+                            payload=ToolPreInvokePayload(name=name, args=arguments, headers=HttpHeaderPayload(headers)),
+                            global_context=global_context,
+                            local_contexts=None,
+                            violations_as_exceptions=True,
+                        )
+                        if pre_result.modified_payload:
+                            payload = pre_result.modified_payload
+                            name = payload.name
+                            arguments = payload.args
+                            if payload.headers:
+                                headers = payload.headers.model_dump()
+
                     tool_call_result = ToolResult(content=[TextContent(text="", type="text")])
                     if transport == "sse":
                         tool_call_result = await connect_to_sse_server(tool_gateway.url)
@@ -1008,6 +1049,7 @@ class ToolService:
                 # Plugin hook: tool post-invoke
                 if self._plugin_manager:
                     post_result, _ = await self._plugin_manager.tool_post_invoke(
+<<<<<<< HEAD
                         payload=ToolPostInvokePayload(name=name, result=tool_result.model_dump(by_alias=True)), global_context=global_context, local_contexts=context_table
                     )
                     if not post_result.continue_processing:
@@ -1020,6 +1062,13 @@ class ToolService:
                             raise PluginViolationError(f"Tool result blocked by plugin {plugin_name}: {violation_code} - {violation_reason} ({violation_desc})", post_result.violation)
                         raise PluginViolationError("Tool result blocked by plugin")
 
+=======
+                        payload=ToolPostInvokePayload(name=name, result=tool_result.model_dump(by_alias=True)),
+                        global_context=global_context,
+                        local_contexts=context_table,
+                        violations_as_exceptions=True,
+                    )
+>>>>>>> remotes/teryl/feat/http_plugin_hooks
                     # Use modified payload if provided
                     if post_result.modified_payload:
                         # Reconstruct ToolResult from modified result
@@ -1031,6 +1080,8 @@ class ToolService:
                             tool_result = ToolResult(content=[TextContent(type="text", text=str(modified_result))])
 
                 return tool_result
+            except (PluginError, PluginViolationError):
+                raise
             except Exception as e:
                 error_message = str(e)
                 # Set span error status
