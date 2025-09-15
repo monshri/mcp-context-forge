@@ -7,10 +7,6 @@ Authors: Shriti Priya
 This module loads configurations for plugins.
 """
 
-# Third-Party
-from llm_guard import input_scanners, output_scanners
-from llm_guard import scan_output, scan_prompt
-
 # First-Party
 from mcpgateway.plugins.framework import (
     Plugin,
@@ -25,10 +21,10 @@ from mcpgateway.plugins.framework import (
     ToolPreInvokePayload,
     ToolPreInvokeResult,
 )
+from llmguardplugin.schema import LLMGuardConfig
+from llmguardplugin.llmguard import LLMGuardBase
 from mcpgateway.plugins.framework.models import PluginConfig, PluginViolation
 from mcpgateway.services.logging_service import LoggingService
-from llmguardplugin.schema import LLMGuardConfig, ModeConfig
-from llmguardplugin.policy import GuardrailPolicy, get_policy_filters
 
 
 # Initialize logging service first
@@ -47,97 +43,9 @@ class LLMGuardPlugin(Plugin):
           config: the skill configuration
         """
         super().__init__(config)
-        self._lgconfig = LLMGuardConfig.model_validate(self._config.config)
-        self._scanners = {"input": {"sanitizers": [], "filters" : []}}
-        logger.info(f"Processing scanners {self._scanners}")
-        logger.info(f"Processing config {self._lgconfig}")
-        self.__init_scanners()
-
-    
-    def _load_policy_scanners(self,config):
-        scanner_names = get_policy_filters(config['policy'] if "policy" in config else get_policy_filters(config["filters"]))
-        return scanner_names
-
-    def _initialize_input_scanners(self):
-        if self._lgconfig.input.filters:
-            policy_filter_names = self._load_policy_scanners(self._lgconfig.input.filters)
-            for filter_name in policy_filter_names:
-                self._scanners["input"]["filters"].append(
-                    input_scanners.get_scanner_by_name(filter_name,self._lgconfig.input.filters[filter_name]))
-        elif self._lgconfig.input.sanitizers:
-            sanitizer_names = self._lgconfig.input.sanitizers.keys()
-            for sanitizer_name in sanitizer_names:
-                self._scanners["input"]["sanitizers"].append(
-                    input_scanners.get_scanner_by_name(sanitizer_name,self._lgconfig.input.sanitizers[sanitizer_name]))
-        else:
-            logger.error("Error initializing filters")
-    
-    
-    def _initialize_output_scanners(self):
-        if self._lgconfig.output.filters:
-            policy_filter_names = self._load_policy_scanners(self._lgconfig.output.filters)
-            for filter_name in policy_filter_names:
-                self._scanners["output"]["filters"].append(
-                    output_scanners.get_scanner_by_name(filter_name,self._lgconfig.output.filters[filter_name]))
-        elif self._lgconfig.output.sanitizers:
-            sanitizer_names = self._lgconfig.output.sanitizers.keys()
-            for sanitizer_name in sanitizer_names:
-                self._scanners["input"]["sanitizers"].append(
-                    input_scanners.get_scanner_by_name(sanitizer_name,self._lgconfig.output.sanitizers[sanitizer_name]))
-        else:
-            logger.error("Error initializing filters")
-
-    def __init_scanners(self):
-        if self._lgconfig.input:
-            self._initialize_input_scanners()
-        if self._lgconfig.output:
-            self._initialize_output_scanners()
-        #NOTE: Check if we load from default just as in Skillet
-
-
-    def _apply_input_filters(self,input_prompt):
-        result = {}
-        for scanner in self._scanners["input"]["filters"]:
-            sanitized_prompt, is_valid, risk_score = scanner.scan(input_prompt)
-            scanner_name = type(scanner).__name__
-            result[scanner_name] = {
-                "sanitized_prompt": sanitized_prompt,
-                "is_valid": is_valid,
-                "risk_score": risk_score,
-            }
-
-        return result    
-    
-
-    def _apply_input_sanitizers(self,input_prompt):
-        result = scan_prompt(self._scanners["input"]["sanitizers"], input_prompt)
-        return result
-    
-    def _apply_output_filters(self,original_input,model_response):
-        result = {}
-        for scanner in self._scanners["output"]["filters"]:
-            sanitized_prompt, is_valid, risk_score = scanner.scan(original_input, model_response)
-            scanner_name = type(scanner).__name__
-            result[scanner_name] = {
-                "sanitized_prompt": sanitized_prompt,
-                "is_valid": is_valid,
-                "risk_score": risk_score,
-            }
-        return result
-    
-    def _apply_output_sanitizers(self, input_prompt, model_response):
-        result = scan_output(self._scanners["output"]["sanitizers"], input_prompt, model_response)
-        return result
-    
-    def _apply_policy(self,result_scan):
-        policy_expression = self._lgconfig.input.filters['policy'] if 'policy' in self._lgconfig.input.filters else " and ".join(list(self._lgconfig.input.filters))
-        policy_message = self._lgconfig.input.filters['policy_message'] if 'policy_message' in self._lgconfig.input.filters else "Request Forbidden"
-        policy = GuardrailPolicy()
-        if not policy.evaluate(policy_expression, result_scan):
-            return False, policy_message, result_scan
-        return True, policy_message, result_scan
-    
-    
+        self.lgconfig = LLMGuardConfig.model_validate(self._config.config)
+        self.llmguard_instance = LLMGuardBase(config=self._config.config)
+                
     async def prompt_pre_fetch(self, payload: PromptPrehookPayload, context: PluginContext) -> PromptPrehookResult:
         """The plugin hook run before a prompt is retrieved and rendered.
 
@@ -148,13 +56,17 @@ class LLMGuardPlugin(Plugin):
         Returns:
             The result of the plugin's analysis, including whether the prompt can proceed.
         """
+        logger.info(f"Processing config {payload}")
         if payload.args:
             for key in payload.args:
-                if self._lgconfig.input.filters:
+                if self.lgconfig.input.filters:
                     logger.info(f"payload {payload}")
-                    result = self._apply_input_filters(payload.args[key])
+                    logger.info(f"payload {context}")
+                    context.state["original_prompt"] = payload.args[key] 
+                    logger.info(f"shriti {context.state}")
+                    result = self.llmguard_instance._apply_input_filters(payload.args[key])
                     logger.info(f"payload {result}")
-                    decision = self._apply_policy(result)
+                    decision = self.llmguard_instance._apply_policy_input(result)
                     #NOTE: Check how to return denial
                     if not decision[0]:
                         payload.args[key] = decision[1]
@@ -164,9 +76,7 @@ class LLMGuardPlugin(Plugin):
                         code="deny",
                         details=decision[2],)
                         return PromptPrehookResult(modified_payload=payload, violation=violation, continue_processing=False)
-                if self._lgconfig.input.sanitizers:
-                    result = self._apply_input_sanitizers(payload.args[key])
-                    payload.args[key] = result[0]
+        
         return PromptPrehookResult(continue_processing=True)
 
     async def prompt_post_fetch(self, payload: PromptPosthookPayload, context: PluginContext) -> PromptPosthookResult:
@@ -179,6 +89,27 @@ class LLMGuardPlugin(Plugin):
         Returns:
             The result of the plugin's analysis, including whether the prompt can proceed.
         """
+        logger.info(f"shriti post {context.state}")
+        if not payload.result.messages:
+            return PromptPosthookResult()
+
+        # Process each message
+        for message in payload.result.messages:
+            if message.content and hasattr(message.content, 'text'):
+                if self.lgconfig.output:
+                    text = message.content.text
+                    logger.info(f"Applying output guardrails on {text}")
+                    logger.info(f"Applying output guardrails using context {context.state["original_prompt"]}")
+                    result = self.llmguard_instance._apply_output_filters(context.state["original_prompt"],text)
+                    decision = self.llmguard_instance._apply_policy_output(result)
+                    logger.info(f"shriti decision {decision}")
+                    if not decision[0]:
+                            violation = PluginViolation(
+                            reason="Output not allowed",
+                            description="{threat} detected in the prompt".format(threat=list(decision[2].keys())[0]),
+                            code="deny",
+                            details=decision[2],)
+                            return PromptPosthookResult(modified_payload=payload, violation=violation, continue_processing=False)
         return PromptPosthookResult(continue_processing=True)
 
     async def tool_pre_invoke(self, payload: ToolPreInvokePayload, context: PluginContext) -> ToolPreInvokeResult:
