@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 
 """Defines Policy Class for Guardrails.
 
@@ -27,11 +28,11 @@ class GuardrailPolicy:
     """Class to apply and evaluate guardrail policies on results produced by scanners (example: LLMGuard)"""
     def evaluate(self, policy: str, scan_result: dict) -> Union[bool, str]:
         """Class to create custom messages responded by your guardrails
-        
+
         Args:
             policy: The policy expression to evaluate the scan results on
             scan_result: The result of scanners applied
-        
+
         Returns:
             A union of bool (if true or false). However, if the policy expression is invalid returns string with invalid expression
         """
@@ -62,11 +63,11 @@ class GuardrailPolicy:
 
 def word_wise_levenshtein_distance(sentence1, sentence2):
     """A helper function to calculate word wise levenshtein distance
-        
+
         Args:
             sentence1: The first sentence
             sentence2: The second sentence
-        
+
         Returns:
             distance between the two sentences
     """
@@ -93,11 +94,11 @@ def word_wise_levenshtein_distance(sentence1, sentence2):
 
 def get_policy_filters(policy_expression) -> Union[list,None]:
     """A helper function to get filters defined in the policy expression
-        
+
         Args:
             policy_expression: The expression of policy
             sentence2: The second sentence
-        
+
         Returns:
             None if no policy expression is defined, else a comma separated list of filters defined in the policy
     """
@@ -110,6 +111,3 @@ def get_policy_filters(policy_expression) -> Union[list,None]:
         return filters
     else:
         return None
-
-
-

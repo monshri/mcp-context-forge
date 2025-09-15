@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """A plugin that leverages the capabilities of llmguard library to apply guardrails on input and output prompts.
 
 Copyright 2025
@@ -44,7 +45,7 @@ class LLMGuardPlugin(Plugin):
         super().__init__(config)
         self.lgconfig = LLMGuardConfig.model_validate(self._config.config)
         self.llmguard_instance = LLMGuardBase(config=self._config.config)
-                
+
     async def prompt_pre_fetch(self, payload: PromptPrehookPayload, context: PluginContext) -> PromptPrehookResult:
         """The plugin hook to apply input guardrails on using llmguard.
 
@@ -64,7 +65,7 @@ class LLMGuardPlugin(Plugin):
                     logger.info(f"Result of input guardrail filters: {result}")
                     decision = self.llmguard_instance._apply_policy_input(result)
                     logger.info(f"Result of policy decision: {decision}")
-                    context.state["original_prompt"] = payload.args[key] 
+                    context.state["original_prompt"] = payload.args[key]
                     if not decision[0]:
                         payload.args[key] = decision[1]
                         violation = PluginViolation(
@@ -73,7 +74,7 @@ class LLMGuardPlugin(Plugin):
                         code="deny",
                         details=decision[2],)
                         return PromptPrehookResult(modified_payload=payload, violation=violation, continue_processing=False)
-        
+
         return PromptPrehookResult(continue_processing=True)
 
     async def prompt_post_fetch(self, payload: PromptPosthookPayload, context: PluginContext) -> PromptPosthookResult:

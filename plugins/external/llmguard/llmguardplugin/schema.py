@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Defines Schema for Guardrails using LLMGuard
 
 Copyright 2025
@@ -15,7 +16,7 @@ from pydantic import BaseModel
 
 class ModeConfig(BaseModel):
     """The config schema for both input and output modes for guardrails
-    
+
     Attributes:
        sanitizers:  A set of transformers applied on input or output. Transforms the original input.
        filters: A set of filters applied on input or output. Returns true or false.
@@ -32,7 +33,7 @@ class ModeConfig(BaseModel):
 
 class LLMGuardConfig(BaseModel):
     """The config schema for guardrails
-    
+
     Attributes:
        input:  A set of sanitizers and filters applied on input
        output: A set of sanitizers and filters applied on output

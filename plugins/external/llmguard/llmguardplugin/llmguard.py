@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """A base class that leverages core functionality of LLMGuard and leverages it to apply guardrails on input and output.
 It imports llmguard library, and uses it to apply two or more filters, combined by the logic of policy defined by the user.
 
@@ -35,7 +36,7 @@ class LLMGuardBase():
         self.lgconfig = LLMGuardConfig.model_validate(config)
         self.scanners = {"input": {"sanitizers": [], "filters" : []}, "output": {"sanitizers": [], "filters" : []}}
         self.__init_scanners()
-     
+
     def _load_policy_scanners(self,config: dict = None) -> Union[list,None]:
         """Loads all the scanner names defined in a policy.
 
@@ -62,8 +63,8 @@ class LLMGuardBase():
                     input_scanners.get_scanner_by_name(sanitizer_name,self.lgconfig.input.sanitizers[sanitizer_name]))
         else:
             logger.error("Error initializing filters")
-    
-    
+
+
     def _initialize_output_scanners(self) -> None:
         """Initializes output filters and sanitizers"""
         if self.lgconfig.output.filters:
@@ -88,13 +89,13 @@ class LLMGuardBase():
 
     def _apply_input_filters(self,input_prompt) -> dict[str,dict[str,Any]]:
         """Takes in input_prompt and applies filters on it
-        
+
         Args:
             input_prompt: The prompt to apply filters on
 
         Returns:
             result: A dictionary with key as scanner_name which is the name of the scanner applied to the input and value as a dictionary with keys "sanitized_prompt" which is the actual prompt,
-                    "is_valid" which is boolean that says if the prompt is valid or not based on a scanner applied and "risk_score" which gives the risk score assigned by the scanner to the prompt. 
+                    "is_valid" which is boolean that says if the prompt is valid or not based on a scanner applied and "risk_score" which gives the risk score assigned by the scanner to the prompt.
         """
         result = {}
         for scanner in self.scanners["input"]["filters"]:
@@ -106,31 +107,31 @@ class LLMGuardBase():
                 "risk_score": risk_score,
             }
 
-        return result    
-    
+        return result
+
 
     def _apply_input_sanitizers(self,input_prompt) -> dict[str,dict[str,Any]]:
         """Takes in input_prompt and applies sanitizers on it
-        
+
         Args:
             input_prompt: The prompt to apply filters on
 
         Returns:
             result: A dictionary with key as scanner_name which is the name of the scanner applied to the input and value as a dictionary with keys "sanitized_prompt" which is the actual prompt,
-                    "is_valid" which is boolean that says if the prompt is valid or not based on a scanner applied and "risk_score" which gives the risk score assigned by the scanner to the prompt. 
+                    "is_valid" which is boolean that says if the prompt is valid or not based on a scanner applied and "risk_score" which gives the risk score assigned by the scanner to the prompt.
         """
         result = scan_prompt(self.scanners["input"]["sanitizers"], input_prompt)
         return result
-    
+
     def _apply_output_filters(self,original_input,model_response) -> dict[str,dict[str,Any]]:
         """Takes in model_response and applies filters on it
-        
+
         Args:
             original_input: The original input prompt for which model produced a response
 
         Returns:
             result: A dictionary with key as scanner_name which is the name of the scanner applied to the output and value as a dictionary with keys "sanitized_prompt" which is the actual prompt,
-                    "is_valid" which is boolean that says if the prompt is valid or not based on a scanner applied and "risk_score" which gives the risk score assigned by the scanner to the prompt. 
+                    "is_valid" which is boolean that says if the prompt is valid or not based on a scanner applied and "risk_score" which gives the risk score assigned by the scanner to the prompt.
         """
         result = {}
         for scanner in self.scanners["output"]["filters"]:
@@ -142,24 +143,24 @@ class LLMGuardBase():
                 "risk_score": risk_score,
             }
         return result
-    
+
     def _apply_output_sanitizers(self, input_prompt, model_response) -> dict[str,dict[str,Any]]:
         """Takes in model_response and applies sanitizers on it
-        
+
         Args:
             original_input: The original input prompt for which model produced a response
 
         Returns:
             result: A dictionary with key as scanner_name which is the name of the scanner applied to the output and value as a dictionary with keys "sanitized_prompt" which is the actual prompt,
-                    "is_valid" which is boolean that says if the prompt is valid or not based on a scanner applied and "risk_score" which gives the risk score assigned by the scanner to the prompt. 
+                    "is_valid" which is boolean that says if the prompt is valid or not based on a scanner applied and "risk_score" which gives the risk score assigned by the scanner to the prompt.
         """
         result = scan_output(self.scanners["output"]["sanitizers"], input_prompt, model_response)
         return result
-    
-    
+
+
     def _apply_policy_input(self,result_scan)-> tuple[bool,str,dict[str,Any]]:
         """Applies policy on input
-        
+
         Args:
             result_scan: A dictionary of results of scanners on input
 
@@ -175,7 +176,7 @@ class LLMGuardBase():
 
     def _apply_policy_output(self,result_scan) -> tuple[bool,str,dict[str,Any]]:
         """Applies policy on output
-        
+
         Args:
             result_scan: A dictionary of results of scanners on output
 
