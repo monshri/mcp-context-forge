@@ -81,10 +81,10 @@ class LLMGuardBase():
 
     def __init_scanners(self) -> None:
          """Initializes input and output scanners"""
-        if self.lgconfig.input:
-            self._initialize_input_scanners()
-        if self.lgconfig.output:
-            self._initialize_output_scanners()
+         if self.lgconfig.input:
+             self._initialize_input_scanners()
+         if self.lgconfig.output:
+             self._initialize_output_scanners()
 
     def _apply_input_filters(self,input_prompt) -> dict[str,dict[str,Any]]:
         """Takes in input_prompt and applies filters on it

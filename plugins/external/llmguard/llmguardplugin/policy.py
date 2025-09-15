@@ -1,14 +1,22 @@
 
+"""Defines Policy Class for Guardrails.
+
+Copyright 2025
+SPDX-License-Identifier: Apache-2.0
+Authors: Shriti Priya
+
+"""
+
+
+# Standard
 import ast
 import re
-import warnings
 from enum import Enum
 from typing import Union
 
-warnings.simplefilter("ignore")
-
 
 class ResponseGuardrailPolicy(Enum):
+    """Class to create custom messages responded by your guardrails"""
     DEFAULT_NORESPONSE_GUARDRAIL = "I'm sorry, I'm afraid I can't do that."
     DEFAULT_NOSKILL = "No skill provided to apply guardrails"
     DEFAULT_JAILBREAK = "Stop trying to jailbreak. I am a responsible assistant."
@@ -16,10 +24,18 @@ class ResponseGuardrailPolicy(Enum):
 
 
 class GuardrailPolicy:
+    """Class to apply and evaluate guardrail policies on results produced by scanners (example: LLMGuard)"""
     def evaluate(self, policy: str, scan_result: dict) -> Union[bool, str]:
+        """Class to create custom messages responded by your guardrails
+        
+        Args:
+            policy: The policy expression to evaluate the scan results on
+            scan_result: The result of scanners applied
+        
+        Returns:
+            A union of bool (if true or false). However, if the policy expression is invalid returns string with invalid expression
+        """
         policy_variables = {key: value['is_valid'] for key, value in scan_result.items()}
-        if isinstance(policy, bool):
-            return False
         try:
             # Parse the policy expression into an abstract syntax tree
             tree = ast.parse(policy, mode='eval')
@@ -45,6 +61,15 @@ class GuardrailPolicy:
 
 
 def word_wise_levenshtein_distance(sentence1, sentence2):
+    """A helper function to calculate word wise levenshtein distance
+        
+        Args:
+            sentence1: The first sentence
+            sentence2: The second sentence
+        
+        Returns:
+            distance between the two sentences
+    """
     words1 = sentence1.split()
     words2 = sentence2.split()
 
@@ -66,7 +91,16 @@ def word_wise_levenshtein_distance(sentence1, sentence2):
     return dp[n][m]
 
 
-def get_policy_filters(policy_expression):
+def get_policy_filters(policy_expression) -> Union[list,None]:
+    """A helper function to get filters defined in the policy expression
+        
+        Args:
+            policy_expression: The expression of policy
+            sentence2: The second sentence
+        
+        Returns:
+            None if no policy expression is defined, else a comma separated list of filters defined in the policy
+    """
     if isinstance(policy_expression, str):
         pattern = r"\b(and|or|not)\b|[()]"
         filters = re.sub(pattern, "", policy_expression).strip()
@@ -78,30 +112,4 @@ def get_policy_filters(policy_expression):
         return None
 
 
-def initialize_guardrail_context():
-    guardrails_context = {
-        "guardrails": {"input": {"filters": [], "sanitizers": []}, "output": {"filters": [], "sanitizers": []}}
-    }
-    return guardrails_context
 
-
-def parse_granite_output(output):
-    safe = "Yes"
-    unsafe = "No"
-    label = None
-    confidence_level = None
-    result = output.split("\n")
-    if len(result) > 1:
-        match = re.search(r'<confidence>(.*?)</confidence>', result[1])
-        if match:
-            confidence_level = match.group(1).strip()
-        else:
-            confidence_level = None
-    if unsafe.lower() == result[0].lower():
-        label = unsafe
-    elif safe.lower() == result[0].lower():
-        label = safe
-    else:
-        label = "Failed"
-
-    return label, confidence_level
