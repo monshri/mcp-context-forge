@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """MCP Gateway LLMGuardPlugin Plugin - A plugin that leverages the capabilities of llmguard library to apply guardrails on input and output prompts.
 
 Copyright 2025

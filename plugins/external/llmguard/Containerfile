@@ -32,6 +32,9 @@ USER 1001
 # Install plugin package
 COPY . .
 RUN pip install --no-cache-dir uv && python -m uv pip install .
+RUN pip install cryptography>=44.0.3
+
+
 
 # Make default cache directory writable
 RUN mkdir -p -m 0776 ${HOME}/.cache

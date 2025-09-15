@@ -5,10 +5,10 @@ plugins:
     description: "A plugin for running input through llmguard scanners "
     version: "0.1"
     author: "MCP Context Forge Team"
-    hooks: ["prompt_pre_fetch"]
+    hooks: ["prompt_pre_fetch", "prompt_post_fetch"]
     tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
     mode: "enforce"  # enforce | permissive | disabled
-    priority: 150
+    priority: 10
     conditions:
       # Apply to specific tools/servers
       - prompts: ["test_prompt"]
@@ -22,10 +22,12 @@ plugins:
             use_onnx: false
           policy: PromptInjection
           policy_message: I'm sorry, I'm afraid I can't do that.
-        sanitizers:
-          Secrets:
-            redact_mode: "all"
-
+      output:
+        filters:
+          Toxicity:
+              threshold: 0.5
+          policy: Toxicity
+          policy_message: I'm sorry, I'm afraid I can't do that.
 # Plugin directories to scan
 plugin_dirs:
   - "llmguardplugin"
