@@ -92,19 +92,20 @@ class ToolNotFoundError(ToolError):
 class ToolNameConflictError(ToolError):
     """Raised when a tool name conflicts with existing (active or inactive) tool."""
 
-    def __init__(self, name: str, enabled: bool = True, tool_id: Optional[int] = None):
+    def __init__(self, name: str, enabled: bool = True, tool_id: Optional[int] = None, visibility: str = "public"):
         """Initialize the error with tool information.
 
         Args:
             name: The conflicting tool name.
             enabled: Whether the existing tool is enabled or not.
             tool_id: ID of the existing tool if available.
+            visibility: The visibility of the tool ("public" or "team").
 
         Examples:
             >>> from mcpgateway.services.tool_service import ToolNameConflictError
             >>> err = ToolNameConflictError('test_tool', enabled=False, tool_id=123)
             >>> str(err)
-            'Tool already exists with name: test_tool (currently inactive, ID: 123)'
+            'Public Tool already exists with name: test_tool (currently inactive, ID: 123)'
             >>> err.name
             'test_tool'
             >>> err.enabled
@@ -115,7 +116,11 @@ class ToolNameConflictError(ToolError):
         self.name = name
         self.enabled = enabled
         self.tool_id = tool_id
-        message = f"Tool already exists with name: {name}"
+        if visibility == "team":
+            vis_label = "Team-level"
+        else:
+            vis_label = "Public"
+        message = f"{vis_label} Tool already exists with name: {name}"
         if not enabled:
             message += f" (currently inactive, ID: {tool_id})"
         super().__init__(message)
@@ -372,6 +377,7 @@ class ToolService:
 
         Raises:
             IntegrityError: If there is a database integrity error.
+            ToolNameConflictError: If a tool with the same name and visibility public exists.
             ToolError: For other tool registration errors.
 
         Examples:
@@ -410,9 +416,21 @@ class ToolService:
 
             if owner_email is None:
                 owner_email = tool.owner_email
-
             if visibility is None:
                 visibility = tool.visibility or "private"
+            # Check for existing tool with the same name and visibility
+            if visibility.lower() == "public":
+                # Check for existing public tool with the same name
+                existing_tool = db.execute(select(DbTool).where(DbTool.name == tool.name, DbTool.visibility == "public")).scalar_one_or_none()
+                if existing_tool:
+                    raise ToolNameConflictError(existing_tool.name, enabled=existing_tool.enabled, tool_id=existing_tool.id, visibility=existing_tool.visibility)
+            elif visibility.lower() == "team" and team_id:
+                # Check for existing team tool with the same name, team_id
+                existing_tool = db.execute(
+                    select(DbTool).where(DbTool.name == tool.name, DbTool.visibility == "team", DbTool.team_id == team_id)  # pylint: disable=comparison-with-callable
+                ).scalar_one_or_none()
+                if existing_tool:
+                    raise ToolNameConflictError(existing_tool.name, enabled=existing_tool.enabled, tool_id=existing_tool.id, visibility=existing_tool.visibility)
 
             db_tool = DbTool(
                 original_name=tool.name,
@@ -453,7 +471,11 @@ class ToolService:
         except IntegrityError as ie:
             db.rollback()
             logger.error(f"IntegrityError during tool registration: {ie}")
-            raise ToolError(f"Tool already exists: {tool.name}")
+            raise ie
+        except ToolNameConflictError as tnce:
+            db.rollback()
+            logger.error(f"ToolNameConflictError during tool registration: {tnce}")
+            raise tnce
         except Exception as e:
             db.rollback()
             raise ToolError(f"Failed to register tool: {str(e)}")
@@ -559,8 +581,11 @@ class ToolService:
         Returns:
             List[ToolRead]: Tools the user has access to
         """
-
         # Build query following existing patterns from list_tools()
+        team_service = TeamManagementService(db)
+        user_teams = await team_service.get_user_teams(user_email)
+        team_ids = [team.id for team in user_teams]
+
         query = select(DbTool)
 
         # Apply active/inactive filter
@@ -568,22 +593,18 @@ class ToolService:
             query = query.where(DbTool.enabled.is_(True))
 
         if team_id:
-            # Filter by specific team
-            query = query.where(DbTool.team_id == team_id)
-
-            # Validate user has access to team
-            team_service = TeamManagementService(db)
-            user_teams = await team_service.get_user_teams(user_email)
-            team_ids = [team.id for team in user_teams]
-
             if team_id not in team_ids:
                 return []  # No access to team
+
+            access_conditions = []
+            # Filter by specific team
+            access_conditions.append(and_(DbTool.team_id == team_id, DbTool.visibility.in_(["team", "public"])))
+
+            access_conditions.append(and_(DbTool.team_id == team_id, DbTool.owner_email == user_email))
+
+            query = query.where(or_(*access_conditions))
         else:
             # Get user's accessible teams
-            team_service = TeamManagementService(db)
-            user_teams = await team_service.get_user_teams(user_email)
-            team_ids = [team.id for team in user_teams]
-
             # Build access conditions following existing patterns
 
             access_conditions = []
@@ -603,9 +624,6 @@ class ToolService:
         # Apply visibility filter if specified
         if visibility:
             query = query.where(DbTool.visibility == visibility)
-
-        # Filter out private tools not owned by the user and are private
-        query = query.where(~((DbTool.owner_email != user_email) & (DbTool.visibility == "private")))
 
         # Apply pagination following existing patterns
         query = query.offset(skip).limit(limit)
@@ -1090,6 +1108,7 @@ class ToolService:
         Raises:
             ToolNotFoundError: If the tool is not found.
             IntegrityError: If there is a database integrity error.
+            ToolNameConflictError: If a tool with the same name already exists.
             ToolError: For other update errors.
 
         Examples:
@@ -1114,6 +1133,23 @@ class ToolService:
             tool = db.get(DbTool, tool_id)
             if not tool:
                 raise ToolNotFoundError(f"Tool not found: {tool_id}")
+
+            # Check for name change and ensure uniqueness
+            if tool_update.name and tool_update.name != tool.name:
+                # Check for existing tool with the same name and visibility
+                if tool_update.visibility.lower() == "public":
+                    # Check for existing public tool with the same name
+                    existing_tool = db.execute(select(DbTool).where(DbTool.custom_name == tool_update.custom_name, DbTool.visibility == "public")).scalar_one_or_none()
+                    if existing_tool:
+                        raise ToolNameConflictError(existing_tool.custom_name, enabled=existing_tool.enabled, tool_id=existing_tool.id, visibility=existing_tool.visibility)
+                elif tool_update.visibility.lower() == "team" and tool_update.team_id:
+                    # Check for existing team tool with the same name
+                    existing_tool = db.execute(
+                        select(DbTool).where(DbTool.custom_name == tool_update.custom_name, DbTool.visibility == "team", DbTool.team_id == tool_update.team_id)
+                    ).scalar_one_or_none()
+                    if existing_tool:
+                        raise ToolNameConflictError(existing_tool.custom_name, enabled=existing_tool.enabled, tool_id=existing_tool.id, visibility=existing_tool.visibility)
+
             if tool_update.custom_name is not None:
                 tool.custom_name = tool_update.custom_name
             if tool_update.displayName is not None:
@@ -1177,6 +1213,9 @@ class ToolService:
         except ToolNotFoundError as tnfe:
             logger.error(f"Tool not found during update: {tnfe}")
             raise tnfe
+        except ToolNameConflictError as tnce:
+            logger.error(f"Tool name conflict during update: {tnce}")
+            raise tnce
         except Exception as ex:
             db.rollback()
             raise ToolError(f"Failed to update tool: {str(ex)}")
