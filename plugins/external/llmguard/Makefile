@@ -50,8 +50,8 @@ CONTAINER_RUNTIME ?= $(shell command -v docker >/dev/null 2>&1 && echo docker ||
 # CONTAINER_RUNTIME ?= docker
 
 # Container port
-CONTAINER_PORT ?= 8000
-CONTAINER_INTERNAL_PORT ?= 8000
+CONTAINER_PORT ?= 8001
+CONTAINER_INTERNAL_PORT ?= 8001
 
 print-runtime:
 	@echo Using container runtime: $(CONTAINER_RUNTIME)

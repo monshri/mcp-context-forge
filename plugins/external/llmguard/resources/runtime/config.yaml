@@ -38,7 +38,7 @@ logging:
 # optional overrides
 sse:
   host: "0.0.0.0"
-  port: 8000
+  port: 8001
   sse_path: "/sse"
   message_path: "/messages/"
   health_path: "/health"
@@ -47,7 +47,7 @@ sse:
 
 streamable-http:
   host: "0.0.0.0"
-  port: 8000
+  port: 8001
   mcp_path: "/mcp"
   stateless: true
   json_response: true
