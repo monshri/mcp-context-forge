@@ -2,7 +2,7 @@
 
 **⚠️ Important**: MCP Gateway is an **OPEN SOURCE PROJECT** provided "as-is" with **NO OFFICIAL SUPPORT** from IBM or its affiliates. Community contributions and best-effort maintenance are provided by project maintainers and contributors.
 
-**Current Version: 0.6.0 (Beta)** - MCP Gateway is currently in early beta. Security features are continuously evolving toward the 1.0 release.
+**Current Version: 0.7.0 (Beta)** - MCP Gateway is currently in early beta. Security features are continuously evolving toward the 1.0 release.
 
 ## Comprehensive Security Capabilities
 
@@ -10,7 +10,12 @@
 
 ### 🔐 Authentication & Identity Management
 
-* **JWT Token Management** - Configurable JWT tokens with expiration, per-user token catalogs, and revocation support ([#87](https://github.com/IBM/mcp-context-forge/issues/87), ✅ [#425](https://github.com/IBM/mcp-context-forge/issues/425))
+* **JWT Token Management** - Configurable JWT tokens with **symmetric (HMAC) and asymmetric (RSA/ECDSA) algorithm support**, expiration, per-user token catalogs, and revocation support ([#87](https://github.com/IBM/mcp-context-forge/issues/87), ✅ [#425](https://github.com/IBM/mcp-context-forge/issues/425))
+  - **HMAC Support**: HS256, HS384, HS512 for simple deployments
+  - **RSA Support**: RS256, RS384, RS512 for enterprise and distributed architectures
+  - **ECDSA Support**: ES256, ES384, ES512 for modern cryptographic requirements
+  - **Key Management**: Configurable public/private key paths for asymmetric algorithms
+  - **Dynamic Configuration**: Runtime algorithm validation and key loading
 
 * **Database-Backed User Authentication** - Argon2id password hashing replacing basic auth ([#544](https://github.com/IBM/mcp-context-forge/issues/544)) 🚧
 
@@ -243,7 +248,7 @@ MCP Gateway implements a comprehensive, multi-layered security approach with "de
 
 ## Security Compliance & Standards
 
-### 🏆 Currently Implemented (v0.6.0)
+### 🏆 Currently Implemented (v0.7.0)
 
 * **Authentication**: JWT tokens with configurable secrets, Basic Auth support (✅ [#663](https://github.com/IBM/mcp-context-forge/issues/663), ✅ [#705](https://github.com/IBM/mcp-context-forge/issues/705))
 * **Input Validation**: Comprehensive validation across all API endpoints using Pydantic (✅ [#339](https://github.com/IBM/mcp-context-forge/issues/339), ✅ [#340](https://github.com/IBM/mcp-context-forge/issues/340))
@@ -271,7 +276,7 @@ MCP Gateway implements a comprehensive, multi-layered security approach with "de
 
 ### 🚀 Upcoming Security Enhancements
 
-**Release 0.6.0 - Completed August 2025**
+**Release 0.7.0 - Completed August 2025**
 - ✅ Plugin framework with security hooks
 - ✅ OpenTelemetry observability integration
 - ✅ OAuth 2.0 authentication support

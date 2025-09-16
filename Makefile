@@ -151,11 +151,14 @@ check-env:
 # help: ▶️ SERVE
 # help: serve                - Run production Gunicorn server on :4444
 # help: certs                - Generate self-signed TLS cert & key in ./certs (won't overwrite)
+# help: certs-jwt            - Generate JWT RSA keys in ./certs/jwt/ (idempotent)
+# help: certs-jwt-ecdsa      - Generate JWT ECDSA keys in ./certs/jwt/ (idempotent)
+# help: certs-all            - Generate both TLS certs and JWT keys (combo target)
 # help: serve-ssl            - Run Gunicorn behind HTTPS on :4444 (uses ./certs)
 # help: dev                  - Run fast-reload dev server (uvicorn)
 # help: run                  - Execute helper script ./run.sh
 
-.PHONY: serve serve-ssl dev run certs
+.PHONY: serve serve-ssl dev run certs certs-jwt certs-jwt-ecdsa certs-all
 
 ## --- Primary servers ---------------------------------------------------------
 serve:
@@ -183,6 +186,40 @@ certs:                           ## Generate ./certs/cert.pem & ./certs/key.pem 
 		echo "✅  TLS certificate written to ./certs"; \
 	fi
 	chmod 640 certs/key.pem
+
+certs-jwt:                       ## Generate JWT RSA keys in ./certs/jwt/ (idempotent)
+	@if [ -f certs/jwt/private.pem ] && [ -f certs/jwt/public.pem ]; then \
+		echo "🔐  Existing JWT RSA keys found in ./certs/jwt - skipping generation."; \
+	else \
+		echo "🔐  Generating JWT RSA key pair (4096-bit)..."; \
+		mkdir -p certs/jwt; \
+		openssl genrsa -out certs/jwt/private.pem 4096; \
+		openssl rsa -in certs/jwt/private.pem -pubout -out certs/jwt/public.pem; \
+		echo "✅  JWT RSA keys written to ./certs/jwt"; \
+	fi
+	@chmod 600 certs/jwt/private.pem
+	@chmod 644 certs/jwt/public.pem
+	@echo "🔒  Permissions set: private.pem (600), public.pem (644)"
+
+certs-jwt-ecdsa:                 ## Generate JWT ECDSA keys in ./certs/jwt/ (idempotent)
+	@if [ -f certs/jwt/ec_private.pem ] && [ -f certs/jwt/ec_public.pem ]; then \
+		echo "🔐  Existing JWT ECDSA keys found in ./certs/jwt - skipping generation."; \
+	else \
+		echo "🔐  Generating JWT ECDSA key pair (P-256 curve)..."; \
+		mkdir -p certs/jwt; \
+		openssl ecparam -genkey -name prime256v1 -noout -out certs/jwt/ec_private.pem; \
+		openssl ec -in certs/jwt/ec_private.pem -pubout -out certs/jwt/ec_public.pem; \
+		echo "✅  JWT ECDSA keys written to ./certs/jwt"; \
+	fi
+	@chmod 600 certs/jwt/ec_private.pem
+	@chmod 644 certs/jwt/ec_public.pem
+	@echo "🔒  Permissions set: ec_private.pem (600), ec_public.pem (644)"
+
+certs-all: certs certs-jwt       ## Generate both TLS certificates and JWT RSA keys
+	@echo "🎯  All certificates and keys generated successfully!"
+	@echo "📁  TLS:  ./certs/{cert,key}.pem"
+	@echo "📁  JWT:  ./certs/jwt/{private,public}.pem"
+	@echo "💡  Use JWT_ALGORITHM=RS256 with JWT_PUBLIC_KEY_PATH=certs/jwt/public.pem"
 
 ## --- House-keeping -----------------------------------------------------------
 # help: clean                - Remove caches, build artefacts, virtualenv, docs, certs, coverage, SBOM, database files, etc.
@@ -531,7 +568,7 @@ images:
 # help: vulture              - Dead code detection
 
 # Allow specific file/directory targeting
-DEFAULT_TARGETS := mcpgateway mcp-servers/python
+DEFAULT_TARGETS := mcpgateway
 TARGET ?= $(DEFAULT_TARGETS)
 
 # Add dummy targets for file arguments passed to lint commands only
@@ -1827,6 +1864,7 @@ endef
 # help: container-run-host   - Run container using detected runtime with host networking
 # help: container-run-ssl    - Run container with TLS using detected runtime
 # help: container-run-ssl-host - Run container with TLS and host networking
+# help: container-run-ssl-jwt - Run container with TLS and JWT asymmetric keys
 # help: container-push       - Push image (handles localhost/ prefix)
 # help: container-stop       - Stop & remove the container
 # help: container-logs       - Stream container logs
@@ -1841,7 +1879,7 @@ endef
 # help: show-runtime         - Show current container runtime
 
 .PHONY: container-build container-run container-run-ssl container-run-ssl-host \
-        container-push container-info container-stop container-logs container-shell \
+        container-run-ssl-jwt container-push container-info container-stop container-logs container-shell \
         container-health image-list image-clean image-retag container-check-image \
         container-build-multi use-docker use-podman show-runtime print-runtime \
         print-image container-validate-env container-check-ports container-wait-healthy
@@ -1959,6 +1997,32 @@ container-run-ssl-host: certs container-check-image
 		-d $(call get_image_name)
 	@sleep 2
 	@echo "✅ Container started with TLS (host networking)"
+
+container-run-ssl-jwt: certs certs-jwt container-check-image
+	@echo "🚀 Running with $(CONTAINER_RUNTIME) (TLS + JWT asymmetric)..."
+	-$(CONTAINER_RUNTIME) stop $(PROJECT_NAME) 2>/dev/null || true
+	-$(CONTAINER_RUNTIME) rm $(PROJECT_NAME) 2>/dev/null || true
+	$(CONTAINER_RUNTIME) run --name $(PROJECT_NAME) \
+		--user $(shell id -u):$(shell id -g) \
+		--env-file=.env \
+		-e SSL=true \
+		-e CERT_FILE=certs/cert.pem \
+		-e KEY_FILE=certs/key.pem \
+		-e JWT_ALGORITHM=RS256 \
+		-e JWT_PUBLIC_KEY_PATH=/app/certs/jwt/public.pem \
+		-e JWT_PRIVATE_KEY_PATH=/app/certs/jwt/private.pem \
+		-v $(PWD)/certs:/app/certs:ro$(if $(filter podman,$(CONTAINER_RUNTIME)),$(COMMA)Z,) \
+		-p 4444:4444 \
+		--restart=always \
+		--memory=$(CONTAINER_MEMORY) --cpus=$(CONTAINER_CPUS) \
+		--health-cmd="curl -k --fail https://localhost:4444/health || exit 1" \
+		--health-interval=1m --health-retries=3 \
+		--health-start-period=30s --health-timeout=10s \
+		-d $(call get_image_name)
+	@sleep 2
+	@echo "✅ Container started with TLS + JWT asymmetric authentication"
+	@echo "🔐 JWT Algorithm: RS256"
+	@echo "📁 Keys mounted: /app/certs/jwt/{private,public}.pem"
 
 container-push: container-check-image
 	@echo "📤 Preparing to push image..."
@@ -2674,7 +2738,7 @@ MINIKUBE_ADDONS  ?= ingress ingress-dns metrics-server dashboard registry regist
 # OCI image tag to preload into the cluster.
 # - By default we point to the *local* image built via `make docker-prod`, e.g.
 #   mcpgateway/mcpgateway:latest.  Override with IMAGE=<repo:tag> to use a
-#   remote registry (e.g. ghcr.io/ibm/mcp-context-forge:v0.6.0).
+#   remote registry (e.g. ghcr.io/ibm/mcp-context-forge:v0.7.0).
 TAG              ?= latest         # override with TAG=<ver>
 IMAGE            ?= $(IMG):$(TAG)  # or IMAGE=ghcr.io/ibm/mcp-context-forge:$(TAG)
 
@@ -3309,7 +3373,7 @@ devpi-unconfigure-pip:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 📦  Version helper (defaults to the version in pyproject.toml)
-#      override on the CLI:  make VER=0.6.0 devpi-delete
+#      override on the CLI:  make VER=0.7.0 devpi-delete
 # ─────────────────────────────────────────────────────────────────────────────
 VER ?= $(shell python3 -c "import tomllib, pathlib; \
 print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])" \
@@ -4503,7 +4567,7 @@ MIGRATION_TEST_DIR := tests/migration
 MIGRATION_REPORTS_DIR := $(MIGRATION_TEST_DIR)/reports
 
 # Get supported versions from version config (n-2 policy)
-MIGRATION_VERSIONS := $(shell cd $(MIGRATION_TEST_DIR) && python3 -c "from version_config import get_supported_versions; print(' '.join(get_supported_versions()))" 2>/dev/null || echo "0.5.0 0.6.0 latest")
+MIGRATION_VERSIONS := $(shell cd $(MIGRATION_TEST_DIR) && python3 -c "from version_config import get_supported_versions; print(' '.join(get_supported_versions()))" 2>/dev/null || echo "0.5.0 0.7.0 latest")
 
 .PHONY: migration-test-all migration-test-sqlite migration-test-postgres migration-test-performance \
         migration-setup migration-cleanup migration-debug migration-status

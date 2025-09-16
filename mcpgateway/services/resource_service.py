@@ -249,6 +249,14 @@ class ResourceService:
             "last_execution_time": last_time,
         }
         resource_dict["tags"] = resource.tags or []
+
+        # Include metadata fields for proper API response
+        resource_dict["created_by"] = getattr(resource, "created_by", None)
+        resource_dict["modified_by"] = getattr(resource, "modified_by", None)
+        resource_dict["created_at"] = getattr(resource, "created_at", None)
+        resource_dict["updated_at"] = getattr(resource, "updated_at", None)
+        resource_dict["version"] = getattr(resource, "version", None)
+
         return ResourceRead.model_validate(resource_dict)
 
     async def register_resource(
@@ -565,6 +573,8 @@ class ResourceService:
         Raises:
             ResourceNotFoundError: If resource not found
             ResourceError: If blocked by plugin
+            PluginError: If encounters issue with plugin
+            PluginViolationError: If plugin violated the request. Example - In case of OPA plugin, if the request is denied by policy.
 
         Examples:
             >>> from mcpgateway.services.resource_service import ResourceService
@@ -638,26 +648,11 @@ class ResourceService:
                 pre_payload = ResourcePreFetchPayload(uri=uri, metadata={})
 
                 # Execute pre-fetch hooks
-                try:
-                    pre_result, contexts = await self._plugin_manager.resource_pre_fetch(pre_payload, global_context)
-
-                    # Check if we should continue
-                    if not pre_result.continue_processing:
-                        # Plugin blocked the resource fetch
-                        if pre_result.violation:
-                            logger.warning(f"Resource blocked by plugin: {pre_result.violation.reason} (URI: {uri})")
-                            raise ResourceError(f"Resource blocked: {pre_result.violation.reason}")
-                        raise ResourceError("Resource fetch blocked by plugin")
-
-                    # Use modified URI if plugin changed it
-                    if pre_result.modified_payload:
-                        uri = pre_result.modified_payload.uri
-                        logger.debug(f"Resource URI modified by plugin: {original_uri} -> {uri}")
-                except ResourceError:
-                    raise
-                except Exception as e:
-                    logger.error(f"Error in resource pre-fetch hooks: {e}")
-                    # Continue without plugin processing if there's an error
+                pre_result, contexts = await self._plugin_manager.resource_pre_fetch(pre_payload, global_context, violations_as_exceptions=True)
+                # Use modified URI if plugin changed it
+                if pre_result.modified_payload:
+                    uri = pre_result.modified_payload.uri
+                    logger.debug(f"Resource URI modified by plugin: {original_uri} -> {uri}")
 
             # Original resource fetching logic
             # Check for template
@@ -684,30 +679,12 @@ class ResourceService:
                 post_payload = ResourcePostFetchPayload(uri=original_uri, content=content)
 
                 # Execute post-fetch hooks
-                try:
-                    post_result, _ = await self._plugin_manager.resource_post_fetch(
-                        post_payload,
-                        global_context,
-                        contexts,  # Pass contexts from pre-fetch
-                    )
+                post_result, _ = await self._plugin_manager.resource_post_fetch(post_payload, global_context, contexts, violations_as_exceptions=True)  # Pass contexts from pre-fetch
 
-                    # Check if we should continue
-                    if not post_result.continue_processing:
-                        # Plugin blocked the resource after fetching
-                        if post_result.violation:
-                            logger.warning(f"Resource content blocked by plugin: {post_result.violation.reason} (URI: {original_uri})")
-                            raise ResourceError(f"Resource content blocked: {post_result.violation.reason}")
-                        raise ResourceError("Resource content blocked by plugin")
-
-                    # Use modified content if plugin changed it
-                    if post_result.modified_payload:
-                        content = post_result.modified_payload.content
-                        logger.debug(f"Resource content modified by plugin for URI: {original_uri}")
-                except ResourceError:
-                    raise
-                except Exception as e:
-                    logger.error(f"Error in resource post-fetch hooks: {e}")
-                    # Continue with unmodified content if there's an error
+                # Use modified content if plugin changed it
+                if post_result.modified_payload:
+                    content = post_result.modified_payload.content
+                    logger.debug(f"Resource content modified by plugin for URI: {original_uri}")
 
             # Set success attributes on span
             if span:
@@ -878,7 +855,16 @@ class ResourceService:
             db.rollback()
             logger.error(f"Failed to unsubscribe: {str(e)}")
 
-    async def update_resource(self, db: Session, uri: str, resource_update: ResourceUpdate) -> ResourceRead:
+    async def update_resource(
+        self,
+        db: Session,
+        uri: str,
+        resource_update: ResourceUpdate,
+        modified_by: Optional[str] = None,
+        modified_from_ip: Optional[str] = None,
+        modified_via: Optional[str] = None,
+        modified_user_agent: Optional[str] = None,
+    ) -> ResourceRead:
         """
         Update a resource.
 
@@ -886,6 +872,10 @@ class ResourceService:
             db: Database session
             uri: Resource URI
             resource_update: Resource update object
+            modified_by: Username of the person modifying the resource
+            modified_from_ip: IP address where the modification request originated
+            modified_via: Source of modification (ui/api/import)
+            modified_user_agent: User agent string from the modification request
 
         Returns:
             The updated ResourceRead object
@@ -950,7 +940,21 @@ class ResourceService:
             # Update tags if provided
             if resource_update.tags is not None:
                 resource.tags = resource_update.tags
+
+            # Update metadata fields
             resource.updated_at = datetime.now(timezone.utc)
+            if modified_by:
+                resource.modified_by = modified_by
+            if modified_from_ip:
+                resource.modified_from_ip = modified_from_ip
+            if modified_via:
+                resource.modified_via = modified_via
+            if modified_user_agent:
+                resource.modified_user_agent = modified_user_agent
+            if hasattr(resource, "version") and resource.version is not None:
+                resource.version = resource.version + 1
+            else:
+                resource.version = 1
             db.commit()
             db.refresh(resource)
 

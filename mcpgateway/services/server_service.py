@@ -18,13 +18,15 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 # Third-Party
 import httpx
-from sqlalchemy import case, delete, desc, Float, func, select
+from sqlalchemy import and_, case, delete, desc, Float, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 # First-Party
 from mcpgateway.config import settings
 from mcpgateway.db import A2AAgent as DbA2AAgent
+from mcpgateway.db import EmailTeam as DbEmailTeam
+from mcpgateway.db import EmailTeamMember as DbEmailTeamMember
 from mcpgateway.db import Prompt as DbPrompt
 from mcpgateway.db import Resource as DbResource
 from mcpgateway.db import Server as DbServer
@@ -32,6 +34,7 @@ from mcpgateway.db import ServerMetric
 from mcpgateway.db import Tool as DbTool
 from mcpgateway.schemas import ServerCreate, ServerMetrics, ServerRead, ServerUpdate, TopPerformer
 from mcpgateway.services.logging_service import LoggingService
+from mcpgateway.services.team_management_service import TeamManagementService
 from mcpgateway.utils.metrics_common import build_top_performers
 from mcpgateway.utils.sqlalchemy_modifier import json_contains_expr
 
@@ -51,7 +54,7 @@ class ServerNotFoundError(ServerError):
 class ServerNameConflictError(ServerError):
     """Raised when a server name conflicts with an existing one."""
 
-    def __init__(self, name: str, is_active: bool = True, server_id: Optional[int] = None, visibility: str = "public") -> None:
+    def __init__(self, name: str, is_active: bool = True, server_id: Optional[str] = None, visibility: str = "public") -> None:
         """
         Initialize a ServerNameConflictError exception.
 
@@ -241,6 +244,14 @@ class ServerService:
         server_dict["associated_prompts"] = [prompt.id for prompt in server.prompts] if server.prompts else []
         server_dict["associated_a2a_agents"] = [agent.id for agent in server.a2a_agents] if server.a2a_agents else []
         server_dict["tags"] = server.tags or []
+
+        # Include metadata fields for proper API response
+        server_dict["created_by"] = getattr(server, "created_by", None)
+        server_dict["modified_by"] = getattr(server, "modified_by", None)
+        server_dict["created_at"] = getattr(server, "created_at", None)
+        server_dict["updated_at"] = getattr(server, "updated_at", None)
+        server_dict["version"] = getattr(server, "version", None)
+
         return ServerRead.model_validate(server_dict)
 
     def _assemble_associated_items(
@@ -292,7 +303,16 @@ class ServerService:
         }
 
     async def register_server(
-        self, db: Session, server_in: ServerCreate, created_by: Optional[str] = None, team_id: Optional[str] = None, owner_email: Optional[str] = None, visibility: str = "private"
+        self,
+        db: Session,
+        server_in: ServerCreate,
+        created_by: Optional[str] = None,
+        created_from_ip: Optional[str] = None,
+        created_via: Optional[str] = None,
+        created_user_agent: Optional[str] = None,
+        team_id: Optional[str] = None,
+        owner_email: Optional[str] = None,
+        visibility: str = "private",
     ) -> ServerRead:
         """
         Register a new server in the catalog and validate that all associated items exist.
@@ -312,6 +332,9 @@ class ServerService:
             server_in (ServerCreate): The server creation schema containing server details and lists of
                 associated tool, resource, and prompt IDs (as strings).
             created_by (Optional[str]): Email of the user creating the server, used for ownership tracking.
+            created_from_ip (Optional[str]): IP address from which the creation request originated.
+            created_via (Optional[str]): Source of creation (api, ui, import).
+            created_user_agent (Optional[str]): User agent string from the creation request.
             team_id (Optional[str]): Team ID to assign the server to.
             owner_email (Optional[str]): Email of the user who owns this server.
             visibility (str): Server visibility level (private, team, public).
@@ -355,6 +378,12 @@ class ServerService:
                 team_id=getattr(server_in, "team_id", None) or team_id,
                 owner_email=getattr(server_in, "owner_email", None) or owner_email or created_by,
                 visibility=getattr(server_in, "visibility", None) or visibility,
+                # Metadata fields
+                created_by=created_by,
+                created_from_ip=created_from_ip,
+                created_via=created_via,
+                created_user_agent=created_user_agent,
+                version=1,
             )
             # Check for existing server with the same name
             if visibility.lower() == "public":
@@ -504,10 +533,11 @@ class ServerService:
         Returns:
             List[ServerRead]: Servers the user has access to
         """
-        # First-Party
-        from mcpgateway.services.team_management_service import TeamManagementService  # pylint: disable=import-outside-toplevel
-
         # Build query following existing patterns from list_servers()
+        team_service = TeamManagementService(db)
+        user_teams = await team_service.get_user_teams(user_email)
+        team_ids = [team.id for team in user_teams]
+
         query = select(DbServer)
 
         # Apply active/inactive filter
@@ -515,26 +545,19 @@ class ServerService:
             query = query.where(DbServer.is_active)
 
         if team_id:
-            # Filter by specific team
-            query = query.where(DbServer.team_id == team_id)
-
-            # Validate user has access to team
-            team_service = TeamManagementService(db)
-            user_teams = await team_service.get_user_teams(user_email)
-            team_ids = [team.id for team in user_teams]
-
             if team_id not in team_ids:
                 return []  # No access to team
+
+            access_conditions = []
+            # Filter by specific team
+            access_conditions.append(and_(DbServer.team_id == team_id, DbServer.visibility.in_(["team", "public"])))
+
+            access_conditions.append(and_(DbServer.team_id == team_id, DbServer.owner_email == user_email))
+
+            query = query.where(or_(*access_conditions))
         else:
             # Get user's accessible teams
-            team_service = TeamManagementService(db)
-            user_teams = await team_service.get_user_teams(user_email)
-            team_ids = [team.id for team in user_teams]
-
             # Build access conditions following existing patterns
-            # Third-Party
-            from sqlalchemy import and_, or_  # pylint: disable=import-outside-toplevel
-
             access_conditions = []
 
             # 1. User's personal resources (owner_email matches)
@@ -553,7 +576,6 @@ class ServerService:
         if visibility:
             query = query.where(DbServer.visibility == visibility)
 
-        query = query.where(~((DbServer.owner_email != user_email) & (DbServer.visibility == "private")))
         # Apply pagination following existing patterns
         query = query.offset(skip).limit(limit)
 
@@ -603,13 +625,28 @@ class ServerService:
         logger.debug(f"Server Data: {server_data}")
         return self._convert_server_to_read(server)
 
-    async def update_server(self, db: Session, server_id: str, server_update: ServerUpdate) -> ServerRead:
+    async def update_server(
+        self,
+        db: Session,
+        server_id: str,
+        server_update: ServerUpdate,
+        user_email: str,
+        modified_by: Optional[str] = None,
+        modified_from_ip: Optional[str] = None,
+        modified_via: Optional[str] = None,
+        modified_user_agent: Optional[str] = None,
+    ) -> ServerRead:
         """Update an existing server.
 
         Args:
             db: Database session.
             server_id: The unique identifier of the server.
             server_update: Server update schema with new data.
+            user_email: email of the user performing the update (for permission checks).
+            modified_by: Username who modified this server.
+            modified_from_ip: IP address from which modification was made.
+            modified_via: Source of modification (api, ui, etc.).
+            modified_user_agent: User agent of the client making the modification.
 
         Returns:
             The updated ServerRead object.
@@ -619,6 +656,7 @@ class ServerService:
             ServerNameConflictError: If a new name conflicts with an existing server.
             ServerError: For other update errors.
             IntegrityError: If a database integrity error occurs.
+            ValueError: If visibility or team constraints are violated.
 
         Examples:
             >>> from mcpgateway.services.server_service import ServerService
@@ -637,7 +675,7 @@ class ServerService:
             >>> server_update = MagicMock()
             >>> server_update.id = None  # No UUID change
             >>> import asyncio
-            >>> asyncio.run(service.update_server(db, 'server_id', server_update))
+            >>> asyncio.run(service.update_server(db, 'server_id', server_update, 'user_email'))
             'server_read'
         """
         try:
@@ -675,7 +713,38 @@ class ServerService:
                 server.icon = server_update.icon
 
             if server_update.visibility is not None:
-                server.visibility = server_update.visibility
+                new_visibility = server_update.visibility
+
+                # Validate visibility transitions
+                if new_visibility == "team":
+                    if not server.team_id and not server_update.team_id:
+                        raise ValueError("Cannot set visibility to 'team' without a team_id")
+
+                    # Verify team exists and user is a member
+                    if server.team_id:
+                        team_id = server.team_id
+                    else:
+                        team_id = server_update.team_id
+
+                    team = db.query(DbEmailTeam).filter(DbEmailTeam.id == team_id).first()
+                    if not team:
+                        raise ValueError(f"Team {team_id} not found")
+
+                    # Verify user is a member of the team
+                    membership = (
+                        db.query(DbEmailTeamMember)
+                        .filter(DbEmailTeamMember.team_id == team_id, DbEmailTeamMember.user_email == user_email, DbEmailTeamMember.is_active, DbEmailTeamMember.role == "owner")
+                        .first()
+                    )
+                    if not membership:
+                        raise ValueError("User membership in team not sufficient for this update.")
+
+                elif new_visibility == "public":
+                    # Optional: Check if user has permission to make resources public
+                    # This could be a platform-level permission
+                    pass
+
+                server.visibility = new_visibility
 
             if server_update.team_id is not None:
                 server.team_id = server_update.team_id
@@ -711,7 +780,21 @@ class ServerService:
             if server_update.tags is not None:
                 server.tags = server_update.tags
 
+            # Update metadata fields
             server.updated_at = datetime.now(timezone.utc)
+            if modified_by:
+                server.modified_by = modified_by
+            if modified_from_ip:
+                server.modified_from_ip = modified_from_ip
+            if modified_via:
+                server.modified_via = modified_via
+            if modified_user_agent:
+                server.modified_user_agent = modified_user_agent
+            if hasattr(server, "version") and server.version is not None:
+                server.version = server.version + 1
+            else:
+                server.version = 1
+
             db.commit()
             db.refresh(server)
             # Force loading relationships

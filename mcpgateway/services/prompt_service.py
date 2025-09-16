@@ -35,7 +35,7 @@ from mcpgateway.db import Prompt as DbPrompt
 from mcpgateway.db import PromptMetric, server_prompt_association
 from mcpgateway.models import Message, PromptResult, Role, TextContent
 from mcpgateway.observability import create_span
-from mcpgateway.plugins.framework import GlobalContext, PluginManager, PluginViolationError, PromptPosthookPayload, PromptPrehookPayload
+from mcpgateway.plugins.framework import GlobalContext, PluginManager, PromptPosthookPayload, PromptPrehookPayload
 from mcpgateway.schemas import PromptCreate, PromptRead, PromptUpdate, TopPerformer
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.utils.metrics_common import build_top_performers
@@ -248,6 +248,16 @@ class PromptService:
                 "lastExecutionTime": last_time,
             },
             "tags": db_prompt.tags or [],
+            # Include metadata fields for proper API response
+            "created_by": getattr(db_prompt, "created_by", None),
+            "modified_by": getattr(db_prompt, "modified_by", None),
+            "created_from_ip": getattr(db_prompt, "created_from_ip", None),
+            "created_via": getattr(db_prompt, "created_via", None),
+            "created_user_agent": getattr(db_prompt, "created_user_agent", None),
+            "modified_from_ip": getattr(db_prompt, "modified_from_ip", None),
+            "modified_via": getattr(db_prompt, "modified_via", None),
+            "modified_user_agent": getattr(db_prompt, "modified_user_agent", None),
+            "version": getattr(db_prompt, "version", None),
         }
 
     async def register_prompt(
@@ -555,6 +565,7 @@ class PromptService:
             PluginViolationError: If prompt violates a plugin policy
             PromptNotFoundError: If prompt not found
             PromptError: For other prompt errors
+            PluginError: If encounters issue with plugin
 
         Examples:
             >>> from mcpgateway.services.prompt_service import PromptService
@@ -587,31 +598,15 @@ class PromptService:
                 if not request_id:
                     request_id = uuid.uuid4().hex
                 global_context = GlobalContext(request_id=request_id, user=user, server_id=server_id, tenant_id=tenant_id)
-                try:
-                    pre_result, context_table = await self._plugin_manager.prompt_pre_fetch(payload=PromptPrehookPayload(name=name, args=arguments), global_context=global_context, local_contexts=None)
+                pre_result, context_table = await self._plugin_manager.prompt_pre_fetch(
+                    payload=PromptPrehookPayload(name=name, args=arguments), global_context=global_context, local_contexts=None, violations_as_exceptions=True
+                )
 
-                    if not pre_result.continue_processing:
-                        # Plugin blocked the request
-                        if pre_result.violation:
-                            plugin_name = pre_result.violation.plugin_name
-                            violation_reason = pre_result.violation.reason
-                            violation_desc = pre_result.violation.description
-                            violation_code = pre_result.violation.code
-                            raise PluginViolationError(f"Pre prompting fetch blocked by plugin {plugin_name}: {violation_code} - {violation_reason} ({violation_desc})", pre_result.violation)
-                        raise PluginViolationError("Pre prompting fetch blocked by plugin")
-
-                    # Use modified payload if provided
-                    if pre_result.modified_payload:
-                        payload = pre_result.modified_payload
-                        name = payload.name
-                        arguments = payload.args
-                except PluginViolationError:
-                    raise
-                except Exception as e:
-                    logger.error(f"Error in pre-prompt fetch plugin hook: {e}")
-                    # Only fail if configured to do so
-                    if self._plugin_manager.config and self._plugin_manager.config.plugin_settings.fail_on_plugin_error:
-                        raise
+                # Use modified payload if provided
+                if pre_result.modified_payload:
+                    payload = pre_result.modified_payload
+                    name = payload.name
+                    arguments = payload.args
 
             # Find prompt
             prompt = db.execute(select(DbPrompt).where(DbPrompt.name == name).where(DbPrompt.is_active)).scalar_one_or_none()
@@ -646,26 +641,11 @@ class PromptService:
                     raise PromptError(f"Failed to process prompt: {str(e)}")
 
             if self._plugin_manager:
-                try:
-                    post_result, _ = await self._plugin_manager.prompt_post_fetch(payload=PromptPosthookPayload(name=name, result=result), global_context=global_context, local_contexts=context_table)
-                    if not post_result.continue_processing:
-                        # Plugin blocked the request
-                        if post_result.violation:
-                            plugin_name = post_result.violation.plugin_name
-                            violation_reason = post_result.violation.reason
-                            violation_desc = post_result.violation.description
-                            violation_code = post_result.violation.code
-                            raise PluginViolationError(f"Post prompting fetch blocked by plugin {plugin_name}: {violation_code} - {violation_reason} ({violation_desc})", post_result.violation)
-                        raise PluginViolationError("Post prompting fetch blocked by plugin")
-                    # Use modified payload if provided
-                    return post_result.modified_payload.result if post_result.modified_payload else result
-                except PluginViolationError:
-                    raise
-                except Exception as e:
-                    logger.error(f"Error in post-prompt fetch plugin hook: {e}")
-                    # Only fail if configured to do so
-                    if self._plugin_manager.config and self._plugin_manager.config.plugin_settings.fail_on_plugin_error:
-                        raise
+                post_result, _ = await self._plugin_manager.prompt_post_fetch(
+                    payload=PromptPosthookPayload(name=name, result=result), global_context=global_context, local_contexts=context_table, violations_as_exceptions=True
+                )
+                # Use modified payload if provided
+                return post_result.modified_payload.result if post_result.modified_payload else result
 
             # Set success attributes on span
             if span:
@@ -676,7 +656,16 @@ class PromptService:
 
             return result
 
-    async def update_prompt(self, db: Session, name: str, prompt_update: PromptUpdate) -> PromptRead:
+    async def update_prompt(
+        self,
+        db: Session,
+        name: str,
+        prompt_update: PromptUpdate,
+        modified_by: Optional[str] = None,
+        modified_from_ip: Optional[str] = None,
+        modified_via: Optional[str] = None,
+        modified_user_agent: Optional[str] = None,
+    ) -> PromptRead:
         """
         Update a prompt template.
 
@@ -684,6 +673,10 @@ class PromptService:
             db: Database session
             name: Name of prompt to update
             prompt_update: Prompt update object
+            modified_by: Username of the person modifying the prompt
+            modified_from_ip: IP address where the modification originated
+            modified_via: Source of modification (ui/api/import)
+            modified_user_agent: User agent string from the modification request
 
         Returns:
             The updated PromptRead object
@@ -744,7 +737,21 @@ class PromptService:
             if prompt_update.tags is not None:
                 prompt.tags = prompt_update.tags
 
+            # Update metadata fields
             prompt.updated_at = datetime.now(timezone.utc)
+            if modified_by:
+                prompt.modified_by = modified_by
+            if modified_from_ip:
+                prompt.modified_from_ip = modified_from_ip
+            if modified_via:
+                prompt.modified_via = modified_via
+            if modified_user_agent:
+                prompt.modified_user_agent = modified_user_agent
+            if hasattr(prompt, "version") and prompt.version is not None:
+                prompt.version = prompt.version + 1
+            else:
+                prompt.version = 1
+
             db.commit()
             db.refresh(prompt)
 

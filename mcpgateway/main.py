@@ -49,6 +49,8 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as starletteRequest
+from starlette.responses import Response as starletteResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 # First-Party
@@ -67,7 +69,7 @@ from mcpgateway.middleware.security_headers import SecurityHeadersMiddleware
 from mcpgateway.middleware.token_scoping import token_scoping_middleware
 from mcpgateway.models import InitializeResult, ListResourceTemplatesResult, LogLevel, Root
 from mcpgateway.observability import init_telemetry
-from mcpgateway.plugins.framework import PluginManager, PluginViolationError
+from mcpgateway.plugins.framework import PluginError, PluginManager, PluginViolationError
 from mcpgateway.routers.well_known import router as well_known_router
 from mcpgateway.schemas import (
     A2AAgentCreate,
@@ -97,7 +99,7 @@ from mcpgateway.schemas import (
 from mcpgateway.services.a2a_service import A2AAgentError, A2AAgentNameConflictError, A2AAgentNotFoundError, A2AAgentService
 from mcpgateway.services.completion_service import CompletionService
 from mcpgateway.services.export_service import ExportError, ExportService
-from mcpgateway.services.gateway_service import GatewayConnectionError, GatewayNameConflictError, GatewayNotFoundError, GatewayService
+from mcpgateway.services.gateway_service import GatewayConnectionError, GatewayNameConflictError, GatewayNotFoundError, GatewayService, GatewayUrlConflictError
 from mcpgateway.services.import_service import ConflictStrategy, ImportConflictError
 from mcpgateway.services.import_service import ImportError as ImportServiceError
 from mcpgateway.services.import_service import ImportService, ImportValidationError
@@ -172,7 +174,7 @@ a2a_service = A2AAgentService() if settings.mcpgateway_a2a_enabled else None
 streamable_http_session = SessionManagerWrapper()
 
 # Wait for redis to be ready
-if settings.cache_type == "redis":
+if settings.cache_type == "redis" and settings.redis_url is not None:
     wait_for_redis_ready(redis_url=settings.redis_url, max_retries=int(settings.redis_max_retries), retry_interval_ms=int(settings.redis_retry_interval_ms), sync=True)
 
 # Initialize session registry
@@ -266,6 +268,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         None
 
     Raises:
+        SystemExit: When a critical startup error occurs that prevents
+            the application from starting successfully.
         Exception: Any unhandled error that occurs during service
             initialisation or shutdown is re-raised to the caller.
     """
@@ -324,6 +328,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
+        # For plugin errors, exit cleanly without stack trace spam
+        if "Plugin initialization failed" in str(e):
+            # Suppress uvicorn error logging for clean exit
+            # Standard
+            import logging  # pylint: disable=import-outside-toplevel
+
+            logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
+            raise SystemExit(1)
         raise
     finally:
         # Shutdown plugin manager
@@ -336,7 +348,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         logger.info("Shutting down MCP Gateway services")
         # await stop_streamablehttp()
         # Build service list conditionally
-        services_to_shutdown = [
+        services_to_shutdown: List[Any] = [
             resource_cache,
             sampling_handler,
             import_service,
@@ -482,6 +494,81 @@ async def database_exception_handler(_request: Request, exc: IntegrityError):
     return JSONResponse(status_code=409, content=ErrorFormatter.format_database_error(exc))
 
 
+@app.exception_handler(PluginViolationError)
+async def plugin_violation_exception_handler(_request: Request, exc: PluginViolationError):
+    """Handle plugins violations globally.
+
+    Intercepts PluginViolationError exceptions (e.g., OPA policy violation) and returns a properly formatted JSON error response.
+    This provides consistent error handling for plugin violation across the entire application.
+
+    Args:
+        _request: The FastAPI request object that triggered the database error.
+                  (Unused but required by FastAPI's exception handler interface)
+        exc: The PluginViolationError exception containing constraint
+             violation details.
+
+    Returns:
+        JSONResponse: A 403 response with access forbidden.
+
+    Examples:
+        >>> from mcpgateway.plugins.framework import PluginViolationError
+        >>> from mcpgateway.plugins.framework.models import PluginViolation
+        >>> from fastapi import Request
+        >>> import asyncio
+        >>>
+        >>> # Create a mock integrity error
+        >>> mock_error = PluginViolationError(message="plugin violation",violation = PluginViolation(
+        ...     reason="Invalid input",
+        ...     description="The input contains prohibited content",
+        ...     code="PROHIBITED_CONTENT",
+        ...     details={"field": "message", "value": "test"}
+        ... ))
+        >>> result = asyncio.run(plugin_violation_exception_handler(None, mock_error))
+        >>> result.status_code
+        403
+    """
+    policy_violation = exc.violation.model_dump() if exc.violation else {}
+    policy_violation["message"] = exc.message
+    return JSONResponse(status_code=403, content=policy_violation)
+
+
+@app.exception_handler(PluginError)
+async def plugin_exception_handler(_request: Request, exc: PluginError):
+    """Handle plugins errors globally.
+
+    Intercepts PluginError exceptions and returns a properly formatted JSON error response.
+    This provides consistent error handling for plugin error across the entire application.
+
+    Args:
+        _request: The FastAPI request object that triggered the database error.
+                  (Unused but required by FastAPI's exception handler interface)
+        exc: The PluginError exception containing constraint
+             violation details.
+
+    Returns:
+        JSONResponse: A 500 response with internal server error.
+
+    Examples:
+        >>> from mcpgateway.plugins.framework import PluginViolationError
+        >>> from mcpgateway.plugins.framework.models import PluginErrorModel
+        >>> from fastapi import Request
+        >>> import asyncio
+        >>>
+        >>> # Create a mock integrity error
+        >>> mock_error = PluginError(error = PluginErrorModel(
+        ...     message="plugin error",
+        ...     code="timeout",
+        ...     plugin_name="abc",
+        ...     details={"field": "message", "value": "test"}
+        ... ))
+        >>> result = asyncio.run(plugin_exception_handler(None, mock_error))
+        >>> result.status_code
+        500
+    """
+    error_obj = exc.error.model_dump() if exc.error else {}
+    return JSONResponse(status_code=500, content=error_obj)
+
+
 class DocsAuthMiddleware(BaseHTTPMiddleware):
     """
     Middleware to protect FastAPI's auto-generated documentation routes
@@ -547,22 +634,36 @@ class DocsAuthMiddleware(BaseHTTPMiddleware):
 
 class MCPPathRewriteMiddleware:
     """
-    Supports requests like '/servers/<server_id>/mcp' by rewriting the path to '/mcp'.
+    Middleware that rewrites paths ending with '/mcp' to '/mcp', after performing authentication.
 
-    - Only rewrites paths ending with '/mcp' but not exactly '/mcp'.
-    - Performs authentication before rewriting.
-    - Passes rewritten requests to `streamable_http_session`.
+    - Rewrites paths like '/servers/<server_id>/mcp' to '/mcp'.
+    - Only paths ending with '/mcp' (but not exactly '/mcp') are rewritten.
+    - Authentication is performed before any path rewriting.
+    - If authentication fails, the request is not processed further.
     - All other requests are passed through without change.
+
+    Attributes:
+        application (Callable): The next ASGI application to process the request.
     """
 
-    def __init__(self, application):
+    def __init__(self, application, dispatch=None):
         """
         Initialize the middleware with the ASGI application.
 
         Args:
-            application (Callable): The next ASGI application in the middleware stack.
+            application (Callable): The next ASGI application to handle the request.
+            dispatch (Callable, optional): An optional dispatch function for additional middleware processing.
+
+        Example:
+            >>> import asyncio
+            >>> from unittest.mock import AsyncMock, patch
+            >>> app_mock = AsyncMock()
+            >>> middleware = MCPPathRewriteMiddleware(app_mock)
+            >>> isinstance(middleware.application, AsyncMock)
+            True
         """
         self.application = application
+        self.dispatch = dispatch  # this can be TokenScopingMiddleware
 
     async def __call__(self, scope, receive, send):
         """
@@ -576,39 +677,86 @@ class MCPPathRewriteMiddleware:
         Examples:
             >>> import asyncio
             >>> from unittest.mock import AsyncMock, patch
-            >>>
-            >>> # Test non-HTTP request passthrough
             >>> app_mock = AsyncMock()
             >>> middleware = MCPPathRewriteMiddleware(app_mock)
-            >>> scope = {"type": "websocket", "path": "/ws"}
+
+            >>> # Test path rewriting for /servers/123/mcp with headers in scope
+            >>> scope = { "type": "http", "path": "/servers/123/mcp", "headers": [(b"host", b"example.com")] }
             >>> receive = AsyncMock()
             >>> send = AsyncMock()
-            >>>
-            >>> asyncio.run(middleware(scope, receive, send))
-            >>> app_mock.assert_called_once_with(scope, receive, send)
-            >>>
-            >>> # Test path rewriting for /servers/123/mcp
-            >>> app_mock.reset_mock()
-            >>> scope = {"type": "http", "path": "/servers/123/mcp"}
             >>> with patch('mcpgateway.main.streamable_http_auth', return_value=True):
             ...     with patch.object(streamable_http_session, 'handle_streamable_http') as mock_handler:
             ...         asyncio.run(middleware(scope, receive, send))
             ...         scope["path"]
             '/mcp'
-            >>>
+
             >>> # Test regular path (no rewrite)
-            >>> scope = {"type": "http", "path": "/tools"}
+            >>> scope = { "type": "http","path": "/tools","headers": [(b"host", b"example.com")] }
             >>> with patch('mcpgateway.main.streamable_http_auth', return_value=True):
             ...     asyncio.run(middleware(scope, receive, send))
             ...     scope["path"]
             '/tools'
         """
-        # Only handle HTTP requests, HTTPS uses scope["type"] == "http" in ASGI
         if scope["type"] != "http":
             await self.application(scope, receive, send)
             return
 
-        # Call auth check first
+        # If a dispatch (request middleware) is provided, adapt it
+        if self.dispatch is not None:
+            request = starletteRequest(scope, receive=receive)
+
+            async def call_next(_req: starletteRequest) -> starletteResponse:
+                """
+                Handles the next request in the middleware chain by calling a streamable HTTP response.
+
+                Args:
+                    _req (starletteRequest): The incoming request to be processed.
+
+                Returns:
+                    starletteResponse: A response generated from the streamable HTTP call.
+                """
+                return await self._call_streamable_http(scope, receive, send)
+
+            response = await self.dispatch(request, call_next)
+
+            if response is None:
+                # Either the dispatch handled the response itself,
+                # or it blocked the request. Just return.
+                return
+
+            await response(scope, receive, send)
+            return
+
+        # Otherwise, just continue as normal
+        await self._call_streamable_http(scope, receive, send)
+
+    async def _call_streamable_http(self, scope, receive, send):
+        """
+        Handles the streamable HTTP request after authentication and path rewriting.
+
+        - If authentication is successful and the path is rewritten, this method processes the request
+          using the `streamable_http_session` handler.
+
+        Args:
+            scope (dict): The ASGI connection scope containing request metadata.
+            receive (Callable): The function to receive events from the client.
+            send (Callable): The function to send events to the client.
+
+        Example:
+            >>> import asyncio
+            >>> from unittest.mock import AsyncMock, patch
+            >>> app_mock = AsyncMock()
+            >>> middleware = MCPPathRewriteMiddleware(app_mock)
+            >>> scope = {"type": "http", "path": "/servers/123/mcp"}
+            >>> receive = AsyncMock()
+            >>> send = AsyncMock()
+            >>> with patch('mcpgateway.main.streamable_http_auth', return_value=True):
+            ...     with patch.object(streamable_http_session, 'handle_streamable_http') as mock_handler:
+            ...         asyncio.run(middleware._call_streamable_http(scope, receive, send))
+            >>> mock_handler.assert_called_once_with(scope, receive, send)
+            >>> # The streamable HTTP session handler was called after path rewriting.
+        """
+        # Auth check first
         auth_ok = await streamable_http_auth(scope, receive, send)
         if not auth_ok:
             return
@@ -647,12 +795,14 @@ app.add_middleware(SecurityHeadersMiddleware)
 # Add token scoping middleware (only when email auth is enabled)
 if settings.email_auth_enabled:
     app.add_middleware(BaseHTTPMiddleware, dispatch=token_scoping_middleware)
+    # Add streamable HTTP middleware for /mcp routes with token scoping
+    app.add_middleware(MCPPathRewriteMiddleware, dispatch=token_scoping_middleware)
+else:
+    # Add streamable HTTP middleware for /mcp routes
+    app.add_middleware(MCPPathRewriteMiddleware)
 
 # Add custom DocsAuthMiddleware
 app.add_middleware(DocsAuthMiddleware)
-
-# Add streamable HTTP middleware for /mcp routes
-app.add_middleware(MCPPathRewriteMiddleware)
 
 # Trust all proxies (or lock down with a list of host patterns)
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
@@ -918,7 +1068,7 @@ def update_url_protocol(request: Request) -> str:
     proto = get_protocol_from_request(request)
     new_parsed = parsed._replace(scheme=proto)
     # urlunparse keeps netloc and path intact
-    return urlunparse(new_parsed).rstrip("/")
+    return str(urlunparse(new_parsed)).rstrip("/")
 
 
 # Protocol APIs #
@@ -976,7 +1126,7 @@ async def ping(request: Request, user=Depends(get_current_user)) -> JSONResponse
         body: dict = await request.json()
         if body.get("method") != "ping":
             raise HTTPException(status_code=400, detail="Invalid method")
-        req_id: str = body.get("id")
+        req_id: Optional[str] = body.get("id")
         logger.debug(f"Authenticated user {user} sent ping request.")
         # Return an empty result per the MCP ping specification.
         response: dict = {"jsonrpc": "2.0", "id": req_id, "result": {}}
@@ -984,7 +1134,7 @@ async def ping(request: Request, user=Depends(get_current_user)) -> JSONResponse
     except Exception as e:
         error_response: dict = {
             "jsonrpc": "2.0",
-            "id": body.get("id") if "body" in locals() else None,
+            "id": None,  # req_id not available in this scope
             "error": {"code": -32603, "message": "Internal error", "data": str(e)},
         }
         return JSONResponse(status_code=500, content=error_response)
@@ -1129,6 +1279,7 @@ async def get_server(server_id: str, db: Session = Depends(get_db), user=Depends
 @require_permission("servers.create")
 async def create_server(
     server: ServerCreate,
+    request: Request,
     team_id: Optional[str] = Body(None, description="Team ID to assign server to"),
     visibility: str = Body("private", description="Server visibility: private, team, public"),
     db: Session = Depends(get_db),
@@ -1139,6 +1290,7 @@ async def create_server(
 
     Args:
         server (ServerCreate): The data for the new server.
+        request (Request): The incoming request object for extracting metadata.
         team_id (Optional[str]): Team ID to assign the server to.
         visibility (str): Server visibility level (private, team, public).
         db (Session): The database session used to interact with the data store.
@@ -1151,6 +1303,9 @@ async def create_server(
         HTTPException: If there is a conflict with the server name or other errors.
     """
     try:
+        # Extract metadata from request
+        metadata = MetadataCapture.extract_creation_metadata(request, user)
+
         # Get user email and handle team assignment
         user_email = get_user_email(user)
 
@@ -1165,7 +1320,17 @@ async def create_server(
             team_id = personal_team.id if personal_team else None
 
         logger.debug(f"User {user_email} is creating a new server for team {team_id}")
-        return await server_service.register_server(db, server, created_by=user_email, team_id=team_id, owner_email=user_email, visibility=visibility)
+        return await server_service.register_server(
+            db,
+            server,
+            created_by=metadata["created_by"],
+            created_from_ip=metadata["created_from_ip"],
+            created_via=metadata["created_via"],
+            created_user_agent=metadata["created_user_agent"],
+            team_id=team_id,
+            owner_email=user_email,
+            visibility=visibility,
+        )
     except ServerNameConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ServerError as e:
@@ -1183,6 +1348,7 @@ async def create_server(
 async def update_server(
     server_id: str,
     server: ServerUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user=Depends(get_current_user_with_permissions),
 ) -> ServerRead:
@@ -1192,6 +1358,7 @@ async def update_server(
     Args:
         server_id (str): The ID of the server to update.
         server (ServerUpdate): The updated server data.
+        request (Request): The incoming request object containing metadata.
         db (Session): The database session used to interact with the data store.
         user (str): The authenticated user making the request.
 
@@ -1203,7 +1370,21 @@ async def update_server(
     """
     try:
         logger.debug(f"User {user} is updating server with ID {server_id}")
-        return await server_service.update_server(db, server_id, server)
+        # Extract modification metadata
+        mod_metadata = MetadataCapture.extract_modification_metadata(request, user, 0)  # Version will be incremented in service
+
+        user_email: str = get_user_email(user)
+
+        return await server_service.update_server(
+            db,
+            server_id,
+            server,
+            user_email,
+            modified_by=mod_metadata["modified_by"],
+            modified_from_ip=mod_metadata["modified_from_ip"],
+            modified_via=mod_metadata["modified_via"],
+            modified_user_agent=mod_metadata["modified_user_agent"],
+        )
     except ServerNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ServerNameConflictError as e:
@@ -1368,7 +1549,7 @@ async def server_get_tools(
     include_inactive: bool = False,
     db: Session = Depends(get_db),
     user=Depends(get_current_user_with_permissions),
-) -> List[ToolRead]:
+) -> List[Dict[str, Any]]:
     """
     List tools for the server  with an option to include inactive tools.
 
@@ -1397,7 +1578,7 @@ async def server_get_resources(
     include_inactive: bool = False,
     db: Session = Depends(get_db),
     user=Depends(get_current_user_with_permissions),
-) -> List[ResourceRead]:
+) -> List[Dict[str, Any]]:
     """
     List resources for the server with an option to include inactive resources.
 
@@ -1426,7 +1607,7 @@ async def server_get_prompts(
     include_inactive: bool = False,
     db: Session = Depends(get_db),
     user=Depends(get_current_user_with_permissions),
-) -> List[PromptRead]:
+) -> List[Dict[str, Any]]:
     """
     List prompts for the server with an option to include inactive prompts.
 
@@ -1479,6 +1660,9 @@ async def list_a2a_agents(
 
     Returns:
         List[A2AAgentRead]: A list of A2A agent objects the user has access to.
+
+    Raises:
+        HTTPException: If A2A service is not available.
     """
     # Parse tags parameter if provided (keeping for backward compatibility)
     tags_list = None
@@ -1488,6 +1672,8 @@ async def list_a2a_agents(
     logger.debug(f"User {user} requested A2A agent list with team_id={team_id}, visibility={visibility}, tags={tags_list}")
 
     # Use team-aware filtering
+    if a2a_service is None:
+        raise HTTPException(status_code=503, detail="A2A service not available")
     return await a2a_service.list_agents_for_user(db, user_email=user, team_id=team_id, visibility=visibility, include_inactive=include_inactive, skip=skip, limit=limit)
 
 
@@ -1510,6 +1696,8 @@ async def get_a2a_agent(agent_id: str, db: Session = Depends(get_db), user=Depen
     """
     try:
         logger.debug(f"User {user} requested A2A agent with ID {agent_id}")
+        if a2a_service is None:
+            raise HTTPException(status_code=503, detail="A2A service not available")
         return await a2a_service.get_agent(db, agent_id)
     except A2AAgentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1561,6 +1749,8 @@ async def create_a2a_agent(
             team_id = personal_team.id if personal_team else None
 
         logger.debug(f"User {user_email} is creating a new A2A agent for team {team_id}")
+        if a2a_service is None:
+            raise HTTPException(status_code=503, detail="A2A service not available")
         return await a2a_service.register_agent(
             db,
             agent,
@@ -1616,6 +1806,8 @@ async def update_a2a_agent(
         # Extract modification metadata
         mod_metadata = MetadataCapture.extract_modification_metadata(request, user, 0)  # Version will be incremented in service
 
+        if a2a_service is None:
+            raise HTTPException(status_code=503, detail="A2A service not available")
         return await a2a_service.update_agent(
             db,
             agent_id,
@@ -1664,6 +1856,8 @@ async def toggle_a2a_agent_status(
     """
     try:
         logger.debug(f"User {user} is toggling A2A agent with ID {agent_id} to {'active' if activate else 'inactive'}")
+        if a2a_service is None:
+            raise HTTPException(status_code=503, detail="A2A service not available")
         return await a2a_service.toggle_agent_status(db, agent_id, activate)
     except A2AAgentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1690,6 +1884,8 @@ async def delete_a2a_agent(agent_id: str, db: Session = Depends(get_db), user=De
     """
     try:
         logger.debug(f"User {user} is deleting A2A agent with ID {agent_id}")
+        if a2a_service is None:
+            raise HTTPException(status_code=503, detail="A2A service not available")
         await a2a_service.delete_agent(db, agent_id)
         return {
             "status": "success",
@@ -1728,6 +1924,8 @@ async def invoke_a2a_agent(
     """
     try:
         logger.debug(f"User {user} is invoking A2A agent '{agent_name}' with type '{interaction_type}'")
+        if a2a_service is None:
+            raise HTTPException(status_code=503, detail="A2A service not available")
         return await a2a_service.invoke_agent(db, agent_name, parameters, interaction_type)
     except A2AAgentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2101,7 +2299,7 @@ async def list_resources(
     visibility: Optional[str] = None,
     db: Session = Depends(get_db),
     user=Depends(get_current_user_with_permissions),
-) -> List[ResourceRead]:
+) -> List[Dict[str, Any]]:
     """
     Retrieve a list of resources accessible to the user, with team filtering support.
 
@@ -2262,7 +2460,7 @@ async def read_resource(uri: str, request: Request, db: Session = Depends(get_db
         if isinstance(content, TextContent):
             return {"type": "resource", "uri": uri, "text": content.text}
     except Exception:
-        pass
+        pass  # nosec B110 - Intentionally continue with fallback resource content handling
 
     if isinstance(content, bytes):
         return {"type": "resource", "uri": uri, "blob": content.decode("utf-8", errors="ignore")}
@@ -2281,6 +2479,7 @@ async def read_resource(uri: str, request: Request, db: Session = Depends(get_db
 async def update_resource(
     uri: str,
     resource: ResourceUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user=Depends(get_current_user_with_permissions),
 ) -> ResourceRead:
@@ -2290,6 +2489,7 @@ async def update_resource(
     Args:
         uri (str): URI of the resource.
         resource (ResourceUpdate): New resource data.
+        request (Request): The FastAPI request object for metadata extraction.
         db (Session): Database session.
         user (str): Authenticated user.
 
@@ -2301,7 +2501,18 @@ async def update_resource(
     """
     try:
         logger.debug(f"User {user} is updating resource with URI {uri}")
-        result = await resource_service.update_resource(db, uri, resource)
+        # Extract modification metadata
+        mod_metadata = MetadataCapture.extract_modification_metadata(request, user, 0)  # Version will be incremented in service
+
+        result = await resource_service.update_resource(
+            db,
+            uri,
+            resource,
+            modified_by=mod_metadata["modified_by"],
+            modified_from_ip=mod_metadata["modified_from_ip"],
+            modified_via=mod_metadata["modified_via"],
+            modified_user_agent=mod_metadata["modified_user_agent"],
+        )
     except ResourceNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValidationError as e:
@@ -2408,7 +2619,7 @@ async def list_prompts(
     visibility: Optional[str] = None,
     db: Session = Depends(get_db),
     user=Depends(get_current_user_with_permissions),
-) -> List[PromptRead]:
+) -> List[Dict[str, Any]]:
     """
     List prompts accessible to the user, with team filtering support.
 
@@ -2654,6 +2865,7 @@ async def get_prompt_no_args(
 async def update_prompt(
     name: str,
     prompt: PromptUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user=Depends(get_current_user_with_permissions),
 ) -> PromptRead:
@@ -2663,6 +2875,7 @@ async def update_prompt(
     Args:
         name (str): Identifier of the prompt to update.
         prompt (PromptUpdate): New prompt content and metadata.
+        request (Request): The FastAPI request object for metadata extraction.
         db (Session): Active SQLAlchemy session.
         user (str): Authenticated username.
 
@@ -2676,7 +2889,18 @@ async def update_prompt(
     logger.info(f"User: {user} requested to update prompt: {name} with data={prompt}")
     logger.debug(f"User: {user} requested to update prompt: {name} with data={prompt}")
     try:
-        return await prompt_service.update_prompt(db, name, prompt)
+        # Extract modification metadata
+        mod_metadata = MetadataCapture.extract_modification_metadata(request, user, 0)  # Version will be incremented in service
+
+        return await prompt_service.update_prompt(
+            db,
+            name,
+            prompt,
+            modified_by=mod_metadata["modified_by"],
+            modified_from_ip=mod_metadata["modified_from_ip"],
+            modified_via=mod_metadata["modified_via"],
+            modified_user_agent=mod_metadata["modified_user_agent"],
+        )
     except Exception as e:
         if isinstance(e, PromptNotFoundError):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
@@ -2805,7 +3029,7 @@ async def register_gateway(
     request: Request,
     db: Session = Depends(get_db),
     user=Depends(get_current_user_with_permissions),
-) -> GatewayRead:
+) -> Union[GatewayRead, JSONResponse]:
     """
     Register a new gateway.
 
@@ -2858,6 +3082,8 @@ async def register_gateway(
             return JSONResponse(content={"message": "Unable to process input"}, status_code=status.HTTP_400_BAD_REQUEST)
         if isinstance(ex, GatewayNameConflictError):
             return JSONResponse(content={"message": "Gateway name already exists"}, status_code=status.HTTP_409_CONFLICT)
+        if isinstance(ex, GatewayUrlConflictError):
+            return JSONResponse(content={"message": "Gateway URL already exists"}, status_code=status.HTTP_409_CONFLICT)
         if isinstance(ex, RuntimeError):
             return JSONResponse(content={"message": "Error during execution"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
         if isinstance(ex, ValidationError):
@@ -2869,7 +3095,7 @@ async def register_gateway(
 
 @gateway_router.get("/{gateway_id}", response_model=GatewayRead)
 @require_permission("gateways.read")
-async def get_gateway(gateway_id: str, db: Session = Depends(get_db), user=Depends(get_current_user_with_permissions)) -> GatewayRead:
+async def get_gateway(gateway_id: str, db: Session = Depends(get_db), user=Depends(get_current_user_with_permissions)) -> Union[GatewayRead, JSONResponse]:
     """
     Retrieve a gateway by ID.
 
@@ -2890,15 +3116,17 @@ async def get_gateway(gateway_id: str, db: Session = Depends(get_db), user=Depen
 async def update_gateway(
     gateway_id: str,
     gateway: GatewayUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     user=Depends(get_current_user_with_permissions),
-) -> GatewayRead:
+) -> Union[GatewayRead, JSONResponse]:
     """
     Update a gateway.
 
     Args:
         gateway_id: Gateway ID.
         gateway: Gateway update data.
+        request (Request): The FastAPI request object for metadata extraction.
         db: Database session.
         user: Authenticated user.
 
@@ -2907,7 +3135,18 @@ async def update_gateway(
     """
     logger.debug(f"User '{user}' requested update on gateway {gateway_id} with data={gateway}")
     try:
-        return await gateway_service.update_gateway(db, gateway_id, gateway)
+        # Extract modification metadata
+        mod_metadata = MetadataCapture.extract_modification_metadata(request, user, 0)  # Version will be incremented in service
+
+        return await gateway_service.update_gateway(
+            db,
+            gateway_id,
+            gateway,
+            modified_by=mod_metadata["modified_by"],
+            modified_from_ip=mod_metadata["modified_from_ip"],
+            modified_via=mod_metadata["modified_via"],
+            modified_user_agent=mod_metadata["modified_user_agent"],
+        )
     except Exception as ex:
         if isinstance(ex, GatewayNotFoundError):
             return JSONResponse(content={"message": "Gateway not found"}, status_code=status.HTTP_404_NOT_FOUND)
@@ -2917,6 +3156,8 @@ async def update_gateway(
             return JSONResponse(content={"message": "Unable to process input"}, status_code=status.HTTP_400_BAD_REQUEST)
         if isinstance(ex, GatewayNameConflictError):
             return JSONResponse(content={"message": "Gateway name already exists"}, status_code=status.HTTP_409_CONFLICT)
+        if isinstance(ex, GatewayUrlConflictError):
+            return JSONResponse(content={"message": "Gateway URL already exists"}, status_code=status.HTTP_409_CONFLICT)
         if isinstance(ex, RuntimeError):
             return JSONResponse(content={"message": "Error during execution"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
         if isinstance(ex, ValidationError):
@@ -3020,7 +3261,17 @@ async def subscribe_roots_changes(
         StreamingResponse with event-stream media type.
     """
     logger.debug(f"User '{user}' subscribed to root changes stream")
-    return StreamingResponse(root_service.subscribe_changes(), media_type="text/event-stream")
+
+    async def generate_events():
+        """Generate SSE-formatted events from root service changes.
+
+        Yields:
+            str: SSE-formatted event data.
+        """
+        async for event in root_service.subscribe_changes():
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(generate_events(), media_type="text/event-stream")
 
 
 ##################
@@ -3038,6 +3289,10 @@ async def handle_rpc(request: Request, db: Session = Depends(get_db), user=Depen
 
     Returns:
         Response with the RPC result or error.
+
+    Raises:
+        PluginError: If encounters issue with plugin
+        PluginViolationError: If plugin violated the request. Example - In case of OPA plugin, if the request is denied by policy.
     """
     try:
         # Extract user identifier from either RBAC user object or JWT payload
@@ -3051,7 +3306,9 @@ async def handle_rpc(request: Request, db: Session = Depends(get_db), user=Depen
         logger.debug(f"User {user_id} made an RPC request")
         body = await request.json()
         method = body["method"]
-        req_id = body.get("id") if "body" in locals() else None
+        req_id = body.get("id")
+        if req_id is None:
+            req_id = str(uuid.uuid4())
         params = body.get("params", {})
         server_id = params.get("server_id", None)
         cursor = params.get("cursor")  # Extract cursor parameter
@@ -3146,13 +3403,14 @@ async def handle_rpc(request: Request, db: Session = Depends(get_db), user=Depen
         else:
             # Backward compatibility: Try to invoke as a tool directly
             # This allows both old format (method=tool_name) and new format (method=tools/call)
+            # Standard
             headers = {k.lower(): v for k, v in request.headers.items()}
             try:
                 result = await tool_service.invoke_tool(db=db, name=method, arguments=params, request_headers=headers)
                 if hasattr(result, "model_dump"):
                     result = result.model_dump(by_alias=True, exclude_none=True)
-            except PluginViolationError:
-                return JSONResponse(status_code=403, content={"detail": "policy_deny"})
+            except (PluginError, PluginViolationError):
+                raise
             except (ValueError, Exception):
                 # If not a tool, try forwarding to gateway
                 try:
@@ -3165,6 +3423,8 @@ async def handle_rpc(request: Request, db: Session = Depends(get_db), user=Depen
 
         return {"jsonrpc": "2.0", "result": result, "id": req_id}
 
+    except (PluginError, PluginViolationError):
+        raise
     except JSONRPCError as e:
         error = e.to_dict()
         return {"jsonrpc": "2.0", "error": error["error"], "id": req_id}
@@ -3437,7 +3697,7 @@ async def reset_metrics(entity: Optional[str] = None, entity_id: Optional[int] =
         await prompt_service.reset_metrics(db)
     elif entity.lower() in ("a2a_agent", "a2a"):
         if a2a_service and settings.mcpgateway_a2a_metrics_enabled:
-            await a2a_service.reset_metrics(db, entity_id)
+            await a2a_service.reset_metrics(db, str(entity_id) if entity_id is not None else None)
         else:
             raise HTTPException(status_code=400, detail="A2A features are disabled")
     else:
@@ -3649,7 +3909,7 @@ async def export_configuration(
             tags=tags_list,
             include_inactive=include_inactive,
             include_dependencies=include_dependencies,
-            exported_by=username,
+            exported_by=username or "unknown",
             root_path=root_path,
         )
 
@@ -3700,7 +3960,7 @@ async def export_selective_configuration(
         elif isinstance(user, dict):
             username = user.get("email")
 
-        export_data = await export_service.export_selective(db=db, entity_selections=entity_selections, include_dependencies=include_dependencies, exported_by=username)
+        export_data = await export_service.export_selective(db=db, entity_selections=entity_selections, include_dependencies=include_dependencies, exported_by=username or "unknown")
 
         return export_data
 
@@ -3748,7 +4008,7 @@ async def import_configuration(
         try:
             strategy = ConflictStrategy(conflict_strategy.lower())
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid conflict strategy. Must be one of: {[s.value for s in ConflictStrategy]}")
+            raise HTTPException(status_code=400, detail=f"Invalid conflict strategy. Must be one of: {[s.value for s in list(ConflictStrategy)]}")
 
         # Extract username from user (which is now an EmailUser object)
         if hasattr(user, "email"):
@@ -3760,7 +4020,7 @@ async def import_configuration(
 
         # Perform import
         import_status = await import_service.import_configuration(
-            db=db, import_data=import_data, conflict_strategy=strategy, dry_run=dry_run, rekey_secret=rekey_secret, imported_by=username, selected_entities=selected_entities
+            db=db, import_data=import_data, conflict_strategy=strategy, dry_run=dry_run, rekey_secret=rekey_secret, imported_by=username or "unknown", selected_entities=selected_entities
         )
 
         return import_status.to_dict()
