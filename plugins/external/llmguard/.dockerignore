@@ -15,7 +15,7 @@ deployment/
 docs/
 deployment/k8s/
 mcp-servers/
-tests/
+# tests/
 test/
 attic/
 *.md

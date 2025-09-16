@@ -97,8 +97,8 @@ class LLMGuardPlugin(Plugin):
                 if self.lgconfig.output:
                     text = message.content.text
                     logger.info(f"Applying output guardrails on {text}")
-                    result = self.llmguard_instance._apply_output_filters(context.state["original_prompt"],text)
-                    logger.info(f"Result of output guardrails: {result}")
+                    original_prompt = context.state["original_prompt"] if "original_prompt" in context.state else ""
+                    result = self.llmguard_instance._apply_output_filters(original_prompt,text)
                     decision = self.llmguard_instance._apply_policy_output(result)
                     logger.info(f"Policy decision on output guardrails: {decision}")
                     if not decision[0]:

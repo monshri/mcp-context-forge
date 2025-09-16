@@ -117,11 +117,27 @@ container-build:
 	@echo "🔨 Building with $(CONTAINER_RUNTIME) for platform $(PLATFORM)..."
 	$(CONTAINER_RUNTIME) build \
 		--platform=$(PLATFORM) \
+		--target=builder \
 		-f $(CONTAINER_FILE) \
 		--tag $(IMAGE_BASE):$(IMAGE_TAG) \
 		.
 	@echo "✅ Built image: $(call get_image_name)"
 	$(CONTAINER_RUNTIME) images $(IMAGE_BASE):$(IMAGE_TAG)
+
+container-build-test:
+	@echo "🔨 Building with $(CONTAINER_RUNTIME) for platform $(PLATFORM)..."
+	$(CONTAINER_RUNTIME) build \
+		--platform=$(PLATFORM) \
+		--target=testing \
+		-f $(CONTAINER_FILE) \
+		--tag $(IMAGE_BASE)-testing:$(IMAGE_TAG) \
+		.
+	@echo "✅ Built image: $(call get_image_name)"
+	$(CONTAINER_RUNTIME) images $(IMAGE_BASE)-testing:$(IMAGE_TAG)
+
+container-run-test: 
+	@echo "🚀 Running with $(CONTAINER_RUNTIME)..."
+	docker run mcpgateway/llmguardplugin-testing
 
 container-run: container-check-image
 	@echo "🚀 Running with $(CONTAINER_RUNTIME)..."
@@ -140,6 +156,7 @@ container-run: container-check-image
 	@echo "✅ Container started"
 	@echo "🔍 Health check status:"
 	@$(CONTAINER_RUNTIME) inspect $(PROJECT_NAME) --format='{{.State.Health.Status}}' 2>/dev/null || echo "No health check configured"
+
 
 container-run-host: container-check-image
 	@echo "🚀 Running with $(CONTAINER_RUNTIME)..."
