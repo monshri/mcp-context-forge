@@ -25,6 +25,7 @@ from mcpgateway.plugins.framework import (
     ToolPreInvokeResult,
 )
 from mcpgateway.plugins.framework.models import PluginConfig, PluginViolation
+from mcpgateway.plugins.framework import PluginError, PluginErrorModel
 from mcpgateway.services.logging_service import LoggingService
 
 
@@ -43,9 +44,16 @@ class LLMGuardPlugin(Plugin):
           config: the skill configuration
         """
         super().__init__(config)
-        self.lgconfig = LLMGuardConfig.model_validate(self._config.config)
-        self.llmguard_instance = LLMGuardBase(config=self._config.config)
-
+        self.lgconfig = LLMGuardConfig.model_validate(self._config.config) 
+        if self.__verify_lgconfig():
+            self.llmguard_instance = LLMGuardBase(config=self._config.config)
+        else:
+            raise PluginError(error=PluginErrorModel(message="Invalid configuration for plugin initilialization", plugin_name=self.name))
+        
+    def __verify_lgconfig(self):
+        """Checks if the configuration provided for plugin is valid or not"""
+        return self.lgconfig.input or self.lgconfig.output
+            
     async def prompt_pre_fetch(self, payload: PromptPrehookPayload, context: PluginContext) -> PromptPrehookResult:
         """The plugin hook to apply input guardrails on using llmguard.
 
@@ -67,13 +75,12 @@ class LLMGuardPlugin(Plugin):
                     logger.info(f"Result of policy decision: {decision}")
                     context.state["original_prompt"] = payload.args[key]
                     if not decision[0]:
-                        payload.args[key] = decision[1]
                         violation = PluginViolation(
-                        reason="Prompt not allowed",
+                        reason=decision[1],
                         description="{threat} detected in the prompt".format(threat=list(decision[2].keys())[0]),
                         code="deny",
                         details=decision[2],)
-                        return PromptPrehookResult(modified_payload=payload, violation=violation, continue_processing=False)
+                        return PromptPrehookResult(violation=violation, continue_processing=False)
 
         return PromptPrehookResult(continue_processing=True)
 
@@ -103,11 +110,11 @@ class LLMGuardPlugin(Plugin):
                     logger.info(f"Policy decision on output guardrails: {decision}")
                     if not decision[0]:
                             violation = PluginViolation(
-                            reason="Output not allowed",
+                            reason=decision[1],
                             description="{threat} detected in the prompt".format(threat=list(decision[2].keys())[0]),
                             code="deny",
                             details=decision[2],)
-                            return PromptPosthookResult(modified_payload=payload, violation=violation, continue_processing=False)
+                            return PromptPosthookResult(violation=violation, continue_processing=False)
         return PromptPosthookResult(continue_processing=True)
 
     async def tool_pre_invoke(self, payload: ToolPreInvokePayload, context: PluginContext) -> ToolPreInvokeResult:

@@ -17,7 +17,7 @@ from llm_guard import input_scanners, output_scanners
 from llm_guard import scan_output, scan_prompt
 
 # First-Party
-from llmguardplugin.schema import LLMGuardConfig, ModeConfig
+from llmguardplugin.schema import LLMGuardConfig
 from llmguardplugin.policy import GuardrailPolicy, get_policy_filters
 from mcpgateway.services.logging_service import LoggingService
 
@@ -37,17 +37,25 @@ class LLMGuardBase():
         self.scanners = {"input": {"sanitizers": [], "filters" : []}, "output": {"sanitizers": [], "filters" : []}}
         self.__init_scanners()
 
-    def _load_policy_scanners(self,config: dict = None) -> Union[list,None]:
+    def _load_policy_scanners(self,config: dict = None) -> list:
         """Loads all the scanner names defined in a policy.
 
         Args:
             config: configuration for scanner
 
         Returns:
-            scanner_names: Either None or a list of scanners defined in the policy
+            policy_filters: Either None or a list of scanners defined in the policy
         """
-        scanner_names = get_policy_filters(config['policy'] if "policy" in config else get_policy_filters(config["filters"]))
-        return scanner_names
+        config_keys = get_policy_filters(config)     
+        if "policy" in config:
+            policy_filters = get_policy_filters(config['policy'])
+            check_policy_filter = set(policy_filters).issubset(set(config_keys))
+            if not check_policy_filter:
+                logger.debug(f"Policy mentions filter that is not defined in config")
+                policy_filters = config_keys
+        else:
+            policy_filters = config_keys
+        return policy_filters
 
     def _initialize_input_scanners(self) -> None:
         """Initializes the input filters and sanitizers"""
@@ -84,8 +92,12 @@ class LLMGuardBase():
          """Initializes input and output scanners"""
          if self.lgconfig.input:
              self._initialize_input_scanners()
+         else:
+             logger.info(f"No input scanners defined")
          if self.lgconfig.output:
              self._initialize_output_scanners()
+         else:
+             logger.info(f"No output scanners defined")
 
     def _apply_input_filters(self,input_prompt) -> dict[str,dict[str,Any]]:
         """Takes in input_prompt and applies filters on it

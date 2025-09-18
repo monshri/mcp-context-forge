@@ -108,6 +108,10 @@ def get_policy_filters(policy_expression) -> Union[list,None]:
         return filters.split()
     elif isinstance(policy_expression, dict):
         filters = list(policy_expression.keys())
+        if "policy_message" in filters:
+            filters.remove("policy_message")
+        if "policy" in filters:
+            filters.remove("policy")
         return filters
     else:
         return None
