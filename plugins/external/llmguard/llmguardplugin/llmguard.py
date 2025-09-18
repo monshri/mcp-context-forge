@@ -15,6 +15,7 @@ from typing import Any, Optional, Union
 # Third-Party
 from llm_guard import input_scanners, output_scanners
 from llm_guard import scan_output, scan_prompt
+from llm_guard.vault import Vault
 
 # First-Party
 from llmguardplugin.schema import LLMGuardConfig
@@ -37,6 +38,9 @@ class LLMGuardBase():
         self.scanners = {"input": {"sanitizers": [], "filters" : []}, "output": {"sanitizers": [], "filters" : []}}
         self.__init_scanners()
 
+    def __initialize_vault(self):
+        self.vault = Vault()
+
     def _load_policy_scanners(self,config: dict = None) -> list:
         """Loads all the scanner names defined in a policy.
 
@@ -57,47 +61,65 @@ class LLMGuardBase():
             policy_filters = config_keys
         return policy_filters
 
-    def _initialize_input_scanners(self) -> None:
+    def _initialize_input_filters(self) -> None:
         """Initializes the input filters and sanitizers"""
-        if self.lgconfig.input.filters:
-            policy_filter_names = self._load_policy_scanners(self.lgconfig.input.filters)
+        policy_filter_names = self._load_policy_scanners(self.lgconfig.input.filters)
+        try:
             for filter_name in policy_filter_names:
                 self.scanners["input"]["filters"].append(
                     input_scanners.get_scanner_by_name(filter_name,self.lgconfig.input.filters[filter_name]))
-        elif self._lgconfig.input.sanitizers:
-            sanitizer_names = self._lgconfig.input.sanitizers.keys()
+        except:
+            logger.error("Error initializing filters")
+    
+    def _initialize_input_sanitizers(self) -> None:
+        try:
+            sanitizer_names = self.lgconfig.input.sanitizers.keys()
             for sanitizer_name in sanitizer_names:
+                if sanitizer_name == "Anonymize":
+                    self.__initialize_vault()
+                    logger.info(self.scanners)
+                    logger.info(self.vault)
+                    self.lgconfig.input.sanitizers[sanitizer_name]["vault"] = self.vault
                 self.scanners["input"]["sanitizers"].append(
                     input_scanners.get_scanner_by_name(sanitizer_name,self.lgconfig.input.sanitizers[sanitizer_name]))
-        else:
-            logger.error("Error initializing filters")
-
-
-    def _initialize_output_scanners(self) -> None:
+        except:
+            logger.error("Error initializing sanitizers")
+            
+    def _initialize_output_filters(self) -> None:
         """Initializes output filters and sanitizers"""
-        if self.lgconfig.output.filters:
-            policy_filter_names = self._load_policy_scanners(self.lgconfig.output.filters)
+        policy_filter_names = self._load_policy_scanners(self.lgconfig.output.filters)
+        try:
             for filter_name in policy_filter_names:
                 self.scanners["output"]["filters"].append(
                     output_scanners.get_scanner_by_name(filter_name,self.lgconfig.output.filters[filter_name]))
-        elif self.lgconfig.output.sanitizers:
-            sanitizer_names = self.lgconfig.output.sanitizers.keys()
+                
+        except:
+            logger.error("Error initializing filters")
+        
+    def _initialize_output_sanitizers(self) -> None:
+        logger.info("shriti")
+        sanitizer_names = self.lgconfig.output.sanitizers.keys()
+        try: 
             for sanitizer_name in sanitizer_names:
-                self.scanners["input"]["sanitizers"].append(
-                    input_scanners.get_scanner_by_name(sanitizer_name,self.lgconfig.output.sanitizers[sanitizer_name]))
-        else:
+                if sanitizer_name == "Deanonymize":
+                    self.lgconfig.output.sanitizers[sanitizer_name]["vault"] = self.vault
+                self.scanners["output"]["sanitizers"].append(
+                    output_scanners.get_scanner_by_name(sanitizer_name,self.lgconfig.output.sanitizers[sanitizer_name]))
+            logger.info(self.scanners)
+            logger.info(self.vault)
+        except:
             logger.error("Error initializing filters")
 
-    def __init_scanners(self) -> None:
-         """Initializes input and output scanners"""
-         if self.lgconfig.input:
-             self._initialize_input_scanners()
-         else:
-             logger.info(f"No input scanners defined")
-         if self.lgconfig.output:
-             self._initialize_output_scanners()
-         else:
-             logger.info(f"No output scanners defined")
+    def __init_scanners(self):
+        if self.lgconfig.input.filters:
+            self._initialize_input_filters()
+        if self.lgconfig.output.filters:
+            self._initialize_output_filters()
+        if self.lgconfig.input.sanitizers:
+            self._initialize_input_sanitizers()
+        if self.lgconfig.output.sanitizers:
+            self._initialize_output_sanitizers()
+        
 
     def _apply_input_filters(self,input_prompt) -> dict[str,dict[str,Any]]:
         """Takes in input_prompt and applies filters on it
