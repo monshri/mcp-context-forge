@@ -39,6 +39,11 @@ RUN pip install "cryptography>=44.0.3"
 # Make default cache directory writable
 RUN mkdir -p -m 0776 ${HOME}/.cache
 
+# download tokenizers
+COPY --chmod=0776 ./cache_tokenizers.py ${HOME}/cache_tokenizers.py
+RUN python ${HOME}/cache_tokenizers.py
+RUN ln -s ${HOME}/* ${APP_HOME}
+
 # Update labels
 LABEL maintainer="Context Forge MCP Gateway Team" \
       name="mcp/mcppluginserver" \
