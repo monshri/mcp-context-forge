@@ -9,6 +9,7 @@ Authors: Shriti Priya
 
 # Standard
 from typing import Optional
+from datetime import timedelta
 
 # Third-Party
 from pydantic import BaseModel
@@ -43,5 +44,6 @@ class LLMGuardConfig(BaseModel):
         >>> config.input.filters
         {'PromptInjection' : {'threshold' : 0.5}
     """
+    cache_ttl: int = 0
     input: Optional[ModeConfig] = None
     output: Optional[ModeConfig] = None
