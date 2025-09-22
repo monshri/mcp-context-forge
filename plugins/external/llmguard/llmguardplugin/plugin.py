@@ -89,6 +89,15 @@ class LLMGuardPlugin(Plugin):
                     context.global_context.state["guardrails"] = {}
                     logger.info(f"Applying input guardrail sanitizers on {payload.args[key]}")
                     result = self.llmguard_instance._apply_input_sanitizers(payload.args[key])
+                    logger.info(f"Result of input guardrail sanitizers on {result}")
+                    if not result:
+                        violation = PluginViolation(
+                        reason="Attempt to breach vault",
+                        description="{threat} detected in the prompt".format(threat="vault_leak"),
+                        code="deny",
+                        details={},)
+                        return PromptPrehookResult(violation=violation, continue_processing=False)
+
                     logger.info(f"Result of input guardrail sanitizers: {result}")
 
                     # Set context for the original prompt to be passed further                  
@@ -96,11 +105,12 @@ class LLMGuardPlugin(Plugin):
                     context.global_context.state["guardrails"]["original_prompt"] = payload.args[key]
                     
                     # Set context for the vault if used
-                    if hasattr(self.llmguard_instance, "vault"):
-                        vault_id = id(self.llmguard_instance.vault)
-                        self.cache.update_cache(vault_id,self.llmguard_instance.vault._tuples)
+                    _, vault_id, vault_tuples = self.llmguard_instance._retreive_vault()
+                    if vault_id and vault_tuples:
+                        self.cache.update_cache(vault_id,vault_tuples)
                         context.global_context.state["guardrails"]["vault_cache_id"] = vault_id
                         context.state["guardrails"]["vault_cache_id"] = vault_id
+                        # self.llmguard_instance._destroy_vault()
                     payload.args[key] = result[0] 
         
         return PromptPrehookResult(continue_processing=True,modified_payload=payload)
@@ -160,7 +170,11 @@ class LLMGuardPlugin(Plugin):
                             details=decision[2],)
                             return PromptPosthookResult(violation=violation, continue_processing=False)           
         # destroy any cache
-        self.cache.delete_cache()
+        try:
+            logger.error(f"destroying cache in post {vault_id}")
+            self.cache.delete_cache(vault_id)
+        except Exception as e:
+            logger.info(f"error deleting cache {e}")
         return PromptPosthookResult(continue_processing=True,modified_payload=payload)
 
     async def tool_pre_invoke(self, payload: ToolPreInvokePayload, context: PluginContext) -> ToolPreInvokeResult:

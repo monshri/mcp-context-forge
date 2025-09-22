@@ -31,7 +31,8 @@ class CacheTTLDict(dict):
         logger.info(f"Cache retrieval for id: {key} with value: {retrieved_obj}")
         return retrieved_obj
     
-    def delete_cache(self):
-        self.cache.flushdb()   
-        self.cache.flushall() 
+    def delete_cache(self,key):
+        logger.info(f"deleting cache")
+        deleted_count = self.cache.delete(key)
+        logger.info(f"deleted count {deleted_count}")
 

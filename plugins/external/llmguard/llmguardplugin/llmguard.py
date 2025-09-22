@@ -10,16 +10,18 @@ Authors: Shriti Priya
 
 # Standard
 from typing import Any, Optional, Union
+import datetime
 
 
 # Third-Party
 from llm_guard import input_scanners, output_scanners
 from llm_guard import scan_output, scan_prompt
 from llm_guard.vault import Vault
+from llm_guard.output_scanners import Deanonymize
 
 # First-Party
 from llmguardplugin.schema import LLMGuardConfig
-from llmguardplugin.policy import GuardrailPolicy, get_policy_filters
+from llmguardplugin.policy import GuardrailPolicy, get_policy_filters, word_wise_levenshtein_distance
 from mcpgateway.services.logging_service import LoggingService
 
 
@@ -39,11 +41,56 @@ class LLMGuardBase():
         self.scanners = {"input": {"sanitizers": [], "filters" : []}, "output": {"sanitizers": [], "filters" : []}}
         self.__init_scanners()
 
-    def __initialize_vault(self):
-        self.vault = Vault()
-    
-    def _update_vault(self,tuples):
-        self.vault = Vault(tuples=tuples)
+    def _create_new_vault_on_expiry(self,vault):
+        logger.info(f"Vault current time {datetime.datetime.now()}")
+        logger.info(f"Vault creation time {vault.creation_time}")
+        logger.info(f"Vault tll {self.vault_ttl}")
+        logger.info(f"Vault {datetime.timedelta(seconds=self.vault_ttl)}")
+        delta = datetime.datetime.now()  - vault.creation_time
+        logger.info(f"delta time {delta.total_seconds()}")
+        if datetime.datetime.now()  - vault.creation_time > datetime.timedelta(seconds=self.vault_ttl):
+            del vault 
+            logger.info(f"Vault successfully deleted after expiry")
+            # Reinitalize the scanner with new vault
+            self._update_input_sanitizers()
+            return True 
+        return False
+
+    def _create_vault(self):
+        logger.info("Vault creation")
+        vault = Vault()
+        vault.creation_time = datetime.datetime.now() 
+        logger.info(f"Vault creation time {vault.creation_time}")
+        return vault
+
+    def _retreive_vault(self):
+        vault_id = None
+        vault_tuples = None
+        length = len(self.scanners["input"]["sanitizers"])
+        for i in range(length):
+            scanner_name = type(self.scanners["input"]["sanitizers"][i]).__name__
+            if scanner_name in ["Anonymize"]:
+                try:
+                    logger.info(self.scanners["input"]["sanitizers"][i]._vault._tuples)
+                    vault_id = id(self.scanners["input"]["sanitizers"][i]._vault)
+                    vault_tuples = self.scanners["input"]["sanitizers"][i]._vault._tuples
+                except Exception as e:
+                    logger.error(f"Error retrieving scanner {scanner_name}: {e}")
+        return self.scanners["input"]["sanitizers"][i]._vault, vault_id, vault_tuples
+
+    def _update_input_sanitizers(self):
+        length = len(self.scanners["input"]["sanitizers"])
+        for i in range(length):
+            scanner_name = type(self.scanners["input"]["sanitizers"][i]).__name__
+            if scanner_name in "Anonymize":
+                try:
+                    del self.scanners["input"]["sanitizers"][i]._vault
+                    vault = self._create_vault()
+                    self.scanners["input"]["sanitizers"][i]._vault = vault
+                    logger.info(self.scanners["input"]["sanitizers"][i]._vault._tuples)
+                except Exception as e:
+                    logger.error(f"Error updating scanner {scanner_name}: {e}")
+
 
     def _update_output_sanitizers(self,config):
         length = len(self.scanners["output"]["sanitizers"])
@@ -92,10 +139,18 @@ class LLMGuardBase():
             sanitizer_names = self.lgconfig.input.sanitizers.keys()
             for sanitizer_name in sanitizer_names:
                 if sanitizer_name == "Anonymize":
-                    self.__initialize_vault()
-                    self.lgconfig.input.sanitizers[sanitizer_name]["vault"] = self.vault
-                self.scanners["input"]["sanitizers"].append(
-                    input_scanners.get_scanner_by_name(sanitizer_name,self.lgconfig.input.sanitizers[sanitizer_name]))
+                    vault = self._create_vault()
+                    if "vault_ttl" in self.lgconfig.input.sanitizers[sanitizer_name]:
+                        self.vault_ttl = self.lgconfig.input.sanitizers[sanitizer_name]["vault_ttl"]
+                    self.lgconfig.input.sanitizers[sanitizer_name]["vault"] = vault
+                    anonymizer_config = {k: v for k, v in self.lgconfig.input.sanitizers[sanitizer_name].items() if k not in ["vault_ttl","vault_leak_detection"]}
+                    logger.info(f"Anonymizer config { anonymizer_config}")
+                    logger.info(f"sanitizer config { self.lgconfig.input.sanitizers[sanitizer_name]}")
+                    self.scanners["input"]["sanitizers"].append(
+                        input_scanners.get_scanner_by_name(sanitizer_name,anonymizer_config))
+                else:
+                    self.scanners["input"]["sanitizers"].append(
+                        input_scanners.get_scanner_by_name(sanitizer_name,self.lgconfig.input.sanitizers[sanitizer_name]))
         except Exception as e:
             logger.error(f"Error initializing sanitizers {e}")
             
@@ -115,10 +170,11 @@ class LLMGuardBase():
         try: 
             for sanitizer_name in sanitizer_names:
                 logger.info(f"Hurray {sanitizer_names} ")
+                
                 if sanitizer_name == "Deanonymize":
-                    if not hasattr(self,"vault"):
-                        self.vault = Vault()
-                    self.lgconfig.output.sanitizers[sanitizer_name]["vault"] = self.vault
+                    # if not hasattr(self,"vault"):
+                    #     self.vault = Vault()
+                    self.lgconfig.output.sanitizers[sanitizer_name]["vault"] = Vault()
                 self.scanners["output"]["sanitizers"].append(
                     output_scanners.get_scanner_by_name(sanitizer_name,self.lgconfig.output.sanitizers[sanitizer_name]))
             logger.info(self.scanners)
@@ -169,7 +225,19 @@ class LLMGuardBase():
             result: A dictionary with key as scanner_name which is the name of the scanner applied to the input and value as a dictionary with keys "sanitized_prompt" which is the actual prompt,
                     "is_valid" which is boolean that says if the prompt is valid or not based on a scanner applied and "risk_score" which gives the risk score assigned by the scanner to the prompt.
         """
+        vault,_,_ = self._retreive_vault()
+        # Check for expiry of vault, every time before a sanitizer is applied.
+        vault_update_status = self._create_new_vault_on_expiry(vault)
         result = scan_prompt(self.scanners["input"]["sanitizers"], input_prompt)
+        if "Anonymize" in result[1]:
+            anonymize_config =  self.lgconfig.input.sanitizers["Anonymize"]
+            if "vault_leak_detection" in anonymize_config and anonymize_config["vault_leak_detection"] and not vault_update_status:
+                scanner = Deanonymize(vault)
+                sanitized_output_de, _, _= scanner.scan(result[0], input_prompt)
+                input_anonymize_score = word_wise_levenshtein_distance(input_prompt, result[0])
+                input_deanonymize_score = word_wise_levenshtein_distance(result[0], sanitized_output_de)
+                if input_anonymize_score != input_deanonymize_score:
+                        return None
         return result
 
     def _apply_output_filters(self,original_input,model_response) -> dict[str,dict[str,Any]]:
