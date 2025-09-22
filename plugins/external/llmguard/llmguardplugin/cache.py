@@ -12,7 +12,7 @@ logger = logging_service.get_logger(__name__)
 
 
 class CacheTTLDict(dict):
-    def __init__(self, ttl):
+    def __init__(self, ttl: int = 0):
         self.cache_ttl = ttl
         self.cache = redis.Redis(host=redis_host, port=redis_port)
         logger.info(f"Cache Initialization: {self.cache}")
@@ -21,7 +21,7 @@ class CacheTTLDict(dict):
         serialized_obj = pickle.dumps(value)
         logger.info(f"Update cache in cache: {key} {serialized_obj}")
         self.cache.set(key,serialized_obj)
-        self.cache.expire(key,60)
+        self.cache.expire(key,self.cache_ttl)
         logger.info(f"Cache updated: {self.cache}")
 
     def retrieve_cache(self, key):
@@ -34,5 +34,8 @@ class CacheTTLDict(dict):
     def delete_cache(self,key):
         logger.info(f"deleting cache")
         deleted_count = self.cache.delete(key)
-        logger.info(f"deleted count {deleted_count}")
+        if deleted_count == 1 and self.cache.exists(key) == 0:
+            logger.info(f"Cache deleted successfully for key: {key}")
+        else:
+            logger.info(f"Unsuccessful cache deletion: {key}")
 

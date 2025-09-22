@@ -169,12 +169,12 @@ class LLMGuardPlugin(Plugin):
                             code="deny",
                             details=decision[2],)
                             return PromptPosthookResult(violation=violation, continue_processing=False)           
-        # destroy any cache
-        try:
-            logger.error(f"destroying cache in post {vault_id}")
-            self.cache.delete_cache(vault_id)
-        except Exception as e:
-            logger.info(f"error deleting cache {e}")
+        # # destroy any cache
+        # try:
+        #     logger.error(f"destroying cache in post {vault_id}")
+        #     self.cache.delete_cache(vault_id)
+        # except Exception as e:
+        #     logger.info(f"error deleting cache {e}")
         return PromptPosthookResult(continue_processing=True,modified_payload=payload)
 
     async def tool_pre_invoke(self, payload: ToolPreInvokePayload, context: PluginContext) -> ToolPreInvokeResult:

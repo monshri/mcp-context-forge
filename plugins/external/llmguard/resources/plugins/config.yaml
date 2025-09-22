@@ -15,12 +15,12 @@ plugins:
         server_ids: []  # Apply to all servers
         tenant_ids: []  # Apply to all tenants
     config:
-      cache_ttl: 2 #defined in minutes
+      cache_ttl: 60 #defined in seconds
       input:
         sanitizers:
           Anonymize:
             language: "en"
-            vault_ttl: 120
+            vault_ttl: 120 #defined in seconds
             vault_leak_detection: True
 
   - name: "LLMGuardPluginOutputSanitizer"
@@ -38,7 +38,7 @@ plugins:
         server_ids: []  # Apply to all servers
         tenant_ids: []  # Apply to all tenants
     config:
-      cache_ttl: 2 # defined in minutes
+      cache_ttl: 60 # defined in minutes
       output:
         sanitizers:
           Deanonymize:
