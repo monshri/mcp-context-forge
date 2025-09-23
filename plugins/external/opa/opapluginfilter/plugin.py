@@ -73,7 +73,11 @@ class OPAPluginFilter(Plugin):
                 return default  # Key not found at this level
         return current_data
 
-    def _evaluate_opa_policy(self, url: str, input: OPAInput, policy_input_data_map: dict) -> tuple[bool, Any]:
+    def _create_human_context_message():
+        return
+
+
+    def _evaluate_opa_policy(self, url: str, input: OPAInput, policy_input_data_map: dict) -> tuple[Any, Any]:
         """Function to evaluate OPA policy. Makes a request to opa server with url and input.
 
         Args:
@@ -103,8 +107,12 @@ class OPAPluginFilter(Plugin):
                 return decision, json_response
             elif isinstance(decision, dict) and "allow" in decision:
                 allow = decision["allow"]
+                requires_approval = decision["requires_approval"] if "requires_approval" in decision else False
+                if requires_approval and allow:
+                    logger.debug(f"OPA decision requires_approval {requires_approval} and {allow}")
+                    return "requires_approval",decision
                 logger.debug(f"OPA decision {allow}")
-                return allow, json_response
+                return allow, decision
             else:
                 logger.debug(f"OPA sent a none response {json_response}")
         else:
@@ -176,6 +184,14 @@ class OPAPluginFilter(Plugin):
                     opa_input = BaseOPAInputKeys(kind="tools/call", user="none", payload=payload.model_dump(), context=policy_context, request_ip="none", headers={}, response={})
                     opa_server_url = "{opa_url}{policy}/{policy_endpoint}".format(opa_url=self.opa_config.opa_base_url, policy=tool_policy, policy_endpoint=tool_policy_endpoint)
                     decision, decision_context = self._evaluate_opa_policy(url=opa_server_url, input=OPAInput(input=opa_input), policy_input_data_map=tool_policy_input_data_map)
+                    if isinstance(decision,str):
+                        if decision == "requires_approval":
+                            logger.info(f"Update context {context}")
+                            logger.info(f"Update context {decision}, {decision_context}")
+                            context.global_context.state[decision] = True
+                            context.global_context.state["audit_decision"] = decision_context["audit_decision"] if "audit_decision" in decision_context else {}
+                            logger.info(f"Update context {context}")
+
                     if not decision:
                         violation = PluginViolation(
                             reason="tool invocation not allowed",
