@@ -2,6 +2,223 @@
 
 A plugin that leverages the capabilities of llmguard library to apply guardrails on input and output prompts.
 
+Guardrails
+==============================
+Guardrails refer to the safety measures and guidelines put in place to prevent agents and large language models (LLMs) from generating or promoting harmful, toxic, or misleading content.
+These guardrails are designed to mitigate the risks associated with LLMs, such as prompt injections, jailbreaking, spreading misinformation, toxic, or misleading context, data leakage etc.
+
+LLMGuardPlugin
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Core functionalities:
+
+1. Filters and Sanitizers
+2. Customizable policy with logical combination of filters
+3. Within plugin vault expiry along with vault expiry logic across plugins
+4. Additional Vault leak detection protection 
+
+
+Under the ``plugins/external/llmguard/llmguardplugin/`` directory, you will find ``plugin.py`` file implementing the hooks for `prompt_pre_fetch` and `prompt_post_fetch`. 
+
+In the file `llmguard.py` the base class `LLMGuardBase()` implements core functionalities of input and output sanitizers utilizing the capabilities of the open-source guardrails library `llmguard`.
+
+The main functions which implement the input and output guardrails are:
+
+1. _apply_input_filters()
+2. _apply_input_sanitizers()
+3. _apply_output_filters()
+4. _apply_output_sanitizers()
+
+
+The filters and sanitizers that could be applied on inputs are:
+
+* ``sanitizers``: ``Anonymize``, ``Regex`` and ``Secrets``.
+* ``filters``: ``BanCode``, ``BanCompetitors``, ``BanSubstrings``, ``BanTopics``,
+``Code``, ``Gibberish``, ``InvisibleText``, ``Language``, ``PromptInjection``, ``Regex``,
+``Secrets``, ``Sentiment``, ``TokenLimit`` and ``Toxicity``.
+
+The filters and sanitizers that could be applied on outputs are:
+
+* ``sanitizers``: ``Regex``, ``Sensitive``, and ``Deanonymize``.
+* ``filters``: ``BanCode``, ``BanCompetitors``, ``BanSubstrings``, ``BanTopics``, ``Bias``, ``Code``, ``JSON``, ``Language``, ``LanguageSame``,
+``MaliciousURLs``, ``NoRefusal``, ``ReadingTime``, ``FactualConsistency``, ``Gibberish``
+``Regex``, ``Relevance``, ``Sentiment``, ``Toxicity`` and ``URLReachability``
+
+
+A typical example of applying input and output filters:
+
+``config-input-output-filters.yaml``
+
+.. code-block:: yaml
+
+plugins:
+  # Self-contained Search Replace Plugin
+  - name: "LLMGuardPluginFilter"
+    kind: "llmguardplugin.plugin.LLMGuardPlugin"
+    description: "A plugin for running input through llmguard scanners "
+    version: "0.1"
+    author: "MCP Context Forge Team"
+    hooks: ["prompt_pre_fetch", "prompt_post_fetch"]
+    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    mode: "enforce"  # enforce | permissive | disabled
+    priority: 10
+    conditions:
+      # Apply to specific tools/servers
+      - prompts: ["test_prompt"]
+        server_ids: []  # Apply to all servers
+        tenant_ids: []  # Apply to all tenants
+    config:
+      input:
+        filters:
+          PromptInjection:
+            threshold: 0.6
+            use_onnx: false
+          policy: PromptInjection
+          policy_message: I'm sorry, I cannot allow this input.
+      output:
+        filters:
+          Toxicity:
+              threshold: 0.5
+          policy: Toxicity
+          policy_message: I'm sorry, I cannot allow this output.
+
+
+# Policy `mcp-context-forge/plugins/external/llmguard/llmguardplugin/policy.py`
+
+`GuardrailPolicy` : This class implements the policy evaluation system for the LLMGuardPlugin. Basically, after the input prompt or model response has been passed through input or output filters, if there is a `policy_expression` defined for input or output, it's evaluated using this class.
+Your `policy` or `policy_expression` could be any logical combination of filters and this class would be able to evaluate it.
+
+For example:
+
+# Simple expressions
+"Toxicity"
+"Toxicity and PromptInjection"
+"Toxicity or PromptInjection"
+
+# Complex expressions with grouping
+"(PromptInjection and Toxicity) and TokenLimit"
+
+
+# ResponseGuardrailPolicy Enum
+
+Predefined response messages for different guardrail scenarios:
+1. DEFAULT_NORESPONSE_GUARDRAIL: "I'm sorry, I'm afraid I can't do that."
+2. DEFAULT_DENIAL_MESSAGE = "Access Forbidden"
+
+# Helper Functions
+word_wise_levenshtein_distance(sentence1: str, sentence2: str) -> int
+Calculates the Levenshtein distance between two sentences at the word level.
+
+get_policy_filters(policy_expression: Union[str, dict]) -> Union[list, None]
+Extracts filter names from policy expressions, excluding reserved keywords like policy_message and policy
+
+
+# Guardrails Context
+The input when passed through guardrails a context is added for the scanners ran on the input. Also, 
+if there are any context that needs to be passed to other plugins. 
+For example - In the case of Anonymizer and Deanonymizer, in `context.state` or `context.global_context.state`, within the key `guardrails` information like original prompt, id of the vault used for anonymization etc is passed. This context is either utilized within the plugin or passed to other plugins.
+
+
+# Schema `mcp-context-forge/plugins/external/llmguard/llmguardplugin/schema.py`
+
+`ModeConfig Class`
+The ModeConfig class defines the configuration schema for individual guardrail modes (input or output processing):
+
+sanitizers: Optional dictionary containing transformers that modify the original input/output content. These components actively change the data (e.g., removing sensitive information, redacting PII)
+
+filters: Optional dictionary containing validators that return boolean results without modifying content. These determine whether content should be allowed or blocked (e.g., toxicity detection, prompt injection detection)
+
+The example shows how filters can be configured with thresholds: {"PromptInjection" : {"threshold" : 0.5}} sets a 50% confidence threshold for detecting prompt injection attempts.
+
+`LLMGuardConfig Class`
+The LLMGuardConfig class serves as the main configuration container with three key attributes:
+
+cache_ttl: Integer specifying cache time-to-live in seconds (defaults to 0, meaning no caching). This controls how long guardrail results are cached to improve performance
+
+input: Optional ModeConfig instance defining sanitizers and filters applied to incoming prompts/requests
+
+output: Optional ModeConfig instance defining sanitizers and filters applied to model responses
+
+# Cache `mcp-context-forge/plugins/external/llmguard/llmguardplugin/cache.py`
+
+The cache system solves a critical problem in LLM guardrail architectures: cross-plugin data sharing. When processing user inputs through multiple security layers, plugins often need to share state information. For example, an Anonymizer plugin might replace PII with tokens, and later a Deanonymizer plugin needs the original mapping to restore the data.
+
+
+CacheTTLDict Class
+The CacheTTLDict class extends Python's built-in dict interface while providing Redis-backed persistence with automatic expiration:
+
+Key Features
+TTL Management: Automatic key expiration using Redis's built-in TTL functionality
+
+Redis Integration: Uses Redis as the backend storage for scalability and persistence across processes
+
+Serialization: Uses Python's pickle module to serialize complex objects (tuples, dictionaries, custom objects)
+
+Comprehensive Logging: Detailed logging for debugging and monitoring cache operations
+
+Configuration
+The system uses environment variables for Redis connection:
+
+REDIS_HOST: Redis server hostname (defaults to "redis")
+
+REDIS_PORT: Redis server port (defaults to 6379)
+
+This follows containerized deployment patterns where Redis runs as a separate service.
+
+Core Methods
+update_cache(key, value)
+Updates the cache with a key-value pair and sets TTL:
+
+Serializes the value using pickle.dumps() to handle complex Python objects
+
+Stores the serialized data in Redis using cache.set()
+
+Sets expiration using cache.expire() - Redis automatically removes the key after TTL expires
+
+Returns a tuple indicating success of both set and expire operations
+
+retrieve_cache(key)
+Retrieves and deserializes cached data:
+
+Fetches raw data from Redis using cache.get()
+
+Deserializes using pickle.loads() to restore the original Python object
+
+Handles cache misses gracefully by returning None
+
+delete_cache(key)
+Explicitly removes cache entries:
+
+Deletes the key using cache.delete()
+
+Verifies deletion by checking both the delete count and key existence
+
+Logs the operation result for monitoring
+
+# Test Cases `mcp-context-forge/plugins/external/llmguard/tests/test_llmguardplugin.py`
+
+| Test Case | Description | Validation |
+|-----------|-------------|------------|
+| test_llmguardplugin_prehook | Tests prompt injection detection on input | Validates that PromptInjection filter successfully blocks malicious prompts attempting to leak credit card information and returns appropriate violation details |
+| test_llmguardplugin_posthook | Tests toxicity detection on output | Validates that Toxicity filter successfully blocks toxic language in LLM responses and applies configured policy message |
+| test_llmguardplugin_prehook_empty_policy_message | Tests default message handling for input filter | Validates that plugin uses default "Request Forbidden" message when policy_message is not configured in input filters |
+| test_llmguardplugin_prehook_empty_policy | Tests default policy behavior for input | Validates that plugin applies AND combination of all configured filters as default policy when no explicit policy is defined |
+| test_llmguardplugin_posthook_empty_policy | Tests default policy behavior for output | Validates that plugin applies AND combination of all configured filters as default policy for output filtering |
+| test_llmguardplugin_posthook_empty_policy_message | Tests default message handling for output filter | Validates that plugin uses default "Request Forbidden" message when policy_message is not configured in output filters |
+| test_llmguardplugin_invalid_config | Tests error handling for invalid configuration | Validates that plugin throws "Invalid configuration for plugin initialization" error when empty config is provided |
+| test_llmguardplugin_prehook_sanitizers_redisvault_expiry | Tests Redis cache TTL expiration | Validates that vault cache entries in Redis expire correctly after the configured cache_ttl period, ensuring proper cleanup of shared anonymization data |
+| test_llmguardplugin_prehook_sanitizers_invault_expiry | Tests internal vault TTL expiration | Validates that internal vault data expires and reinitializes after the configured vault_ttl period, preventing stale anonymization mappings |
+| test_llmguardplugin_sanitizers_vault_leak_detection | Tests vault information leak prevention | Validates that plugin detects and blocks attempts to extract anonymized vault data (e.g., requesting "[REDACTED_CREDIT_CARD_RE_1]") when vault_leak_detection is enabled |
+| test_llmguardplugin_sanitizers_anonymize_deanonymize | Tests complete anonymization workflow | Validates end-to-end anonymization of PII data in input prompts and successful deanonymization of LLM responses, ensuring sensitive data protection throughout the pipeline |
+
+
+
+
+
+
+
+
+
 
 ## Installation
 
@@ -65,10 +282,7 @@ make stop
 ```
 
 
-Guardrails
-==============================
-Guardrails refer to the safety measures and guidelines put in place to prevent agents and large language models (LLMs) from generating or promoting harmful, toxic, or misleading content.
-These guardrails are designed to mitigate the risks associated with LLMs, such as prompt injections, jailbreaking, spreading misinformation, toxic, or misleading context, data leakage etc.
+
 
 Guardrails Architecture
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -194,80 +408,7 @@ The framework also gives you the liberty to define your own custom ``policy_mess
 * ``sanitizers``: They basically transform an input or output. The sanitizers that have been defined would be applied sequentially to the input.
 
 
-LLMGuardGuardrail
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Under the ``skills-sdk/src/skills_sdk/plugins/guardrails`` directory, you will find another file ``llmguard.py`` having class ``LLMGuardSkill`` which inherits from the
-base ``GuardrailSkill`` class defined in ``base.py``. This class ``LLMGuardSkill`` has implementation specific to utilising the scanners in LLM Guard tool in the functions
-``__input__filter()``, ``__output__filter()``,  ``__input__sanitize()``, ``__output__sanitize()``. So, whenever Skillet sees a plugin being protected by ``LLMGuardSkill``, it overrides the
-filters and sanitizers specific functions of ``base.py``.
-
-The filters and sanitizers that could be applied on inputs are:
-
-* ``sanitizers``: ``Anonymize``, ``Regex`` and ``Secrets``.
-* ``filters``: ``BanCode``, ``BanCompetitors``, ``BanSubstrings``, ``BanTopics``,
-``Code``, ``Gibberish``, ``InvisibleText``, ``Language``, ``PromptInjection``, ``Regex``,
-``Secrets``, ``Sentiment``, ``TokenLimit`` and ``Toxicity``.
-
-The filters and sanitizers that could be applied on outputs are:
-
-* ``sanitizers``: ``Regex``, ``Sensitive``, and ``Deanonymize``.
-* ``filters``: ``BanCode``, ``BanCompetitors``, ``BanSubstrings``, ``BanTopics``, ``Bias``, ``Code``, ``JSON``, ``Language``, ``LanguageSame``,
-``MaliciousURLs``, ``NoRefusal``, ``ReadingTime``, ``FactualConsistency``, ``Gibberish``
-``Regex``, ``Relevance``, ``Sentiment``, ``Toxicity`` and ``URLReachability``
-
-.. note::
-
-  When you change the policy, make sure that the filters you are using have been defined either in the ``llmguard.yaml`` or in the plugin YAML file that your applying guardrails to.
-
-A typical example of appying filters and sanitizers for both input and output is:
-
-``llmguard.yaml``
-
-.. code-block:: yaml
-
-    name: 'LLMGuardGuardrail'
-    alias: 'llmguard-guardrail'
-    creator: 'IBM Research'
-    description: 'Guardrail based on LLM Guard'
-    version: '0.1'
-    runtime:
-      class: 'skills_sdk.plugins.guardrails.llmguard.LLMGuardSkill'
-    config:
-      guardrail:
-        input:
-          sanitizers:
-            Anonymize:
-              language: en
-              vault_leak_detection: True
-          filters:
-            PromptInjection:
-              threshold: {{ env['GUARDRAILS_PROMPT_INJECTION_THRESHOLD'] or 0.8 }}
-              use_onnx: false
-            Toxicity:
-              threshold: {{ env['GUARDRAILS_TOXICITY_THRESHOLD'] or 0.5 }}
-            TokenLimit:
-              limit: 4096
-            Regex:
-              patterns:
-                - 'Bearer [A-Za-z0-9-._~+/]+'
-              is_blocked: True
-              match_type: search
-              redact: False
-            policy: (PromptInjection and Toxicity) and TokenLimit
-        output:
-          filters:
-            Toxicity:
-              threshold: {{ env['GUARDRAILS_TOXICITY_THRESHOLD'] or 0.5 }}
-            Regex:
-              patterns:
-                - 'Bearer [A-Za-z0-9-._~+/]+'
-              is_blocked: True
-              redact: False
-            policy: Toxicity and Regex
-          sanitizers:
-            Deanonymize:
-              matching_strategy: exact
 
 
 GuardianGuardrail
