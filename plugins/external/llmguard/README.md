@@ -149,81 +149,86 @@ if there are any context that needs to be passed to other plugins.
 For example - In the case of Anonymizer and Deanonymizer, in `context.state` or `context.global_context.state`, within the key `guardrails` information like original prompt, id of the vault used for anonymization etc is passed. This context is either utilized within the plugin or passed to other plugins.
 
 
-# Schema `mcp-context-forge/plugins/external/llmguard/llmguardplugin/schema.py`
+## Schema
 
-`ModeConfig Class`
-The ModeConfig class defines the configuration schema for individual guardrail modes (input or output processing):
+**File:** `mcp-context-forge/plugins/external/llmguard/llmguardplugin/schema.py`
 
-sanitizers: Optional dictionary containing transformers that modify the original input/output content. These components actively change the data (e.g., removing sensitive information, redacting PII)
+### ModeConfig Class
 
-filters: Optional dictionary containing validators that return boolean results without modifying content. These determine whether content should be allowed or blocked (e.g., toxicity detection, prompt injection detection)
+The `ModeConfig` class defines the configuration schema for individual guardrail modes (input or output processing):
 
-The example shows how filters can be configured with thresholds: {"PromptInjection" : {"threshold" : 0.5}} sets a 50% confidence threshold for detecting prompt injection attempts.
+- **sanitizers**: Optional dictionary containing transformers that modify the original input/output content. These components actively change the data (e.g., removing sensitive information, redacting PII)
 
-`LLMGuardConfig Class`
-The LLMGuardConfig class serves as the main configuration container with three key attributes:
+- **filters**: Optional dictionary containing validators that return boolean results without modifying content. These determine whether content should be allowed or blocked (e.g., toxicity detection, prompt injection detection)
 
-cache_ttl: Integer specifying cache time-to-live in seconds (defaults to 0, meaning no caching). This controls how long guardrail results are cached to improve performance
+The example shows how filters can be configured with thresholds: `{"PromptInjection" : {"threshold" : 0.5}}` sets a 50% confidence threshold for detecting prompt injection attempts.
 
-input: Optional ModeConfig instance defining sanitizers and filters applied to incoming prompts/requests
+### LLMGuardConfig Class
 
-output: Optional ModeConfig instance defining sanitizers and filters applied to model responses
+The `LLMGuardConfig` class serves as the main configuration container with three key attributes:
 
-# Cache `mcp-context-forge/plugins/external/llmguard/llmguardplugin/cache.py`
+- **cache_ttl**: Integer specifying cache time-to-live in seconds (defaults to 0, meaning no caching). This controls how long guardrail results are cached to improve performance
+
+- **input**: Optional `ModeConfig` instance defining sanitizers and filters applied to incoming prompts/requests
+
+- **output**: Optional `ModeConfig` instance defining sanitizers and filters applied to model responses
+
+
+
+# LLMGuardPlugin Cache
+
+**File:** `mcp-context-forge/plugins/external/llmguard/llmguardplugin/cache.py`
+
+## Overview
 
 The cache system solves a critical problem in LLM guardrail architectures: cross-plugin data sharing. When processing user inputs through multiple security layers, plugins often need to share state information. For example, an Anonymizer plugin might replace PII with tokens, and later a Deanonymizer plugin needs the original mapping to restore the data.
 
+## CacheTTLDict Class
 
-CacheTTLDict Class
-The CacheTTLDict class extends Python's built-in dict interface while providing Redis-backed persistence with automatic expiration:
+The CacheTTLDict class extends Python's built-in dict interface while providing Redis-backed persistence with automatic expiration.
 
-Key Features
-TTL Management: Automatic key expiration using Redis's built-in TTL functionality
+### Key Features
 
-Redis Integration: Uses Redis as the backend storage for scalability and persistence across processes
+- **TTL Management**: Automatic key expiration using Redis's built-in TTL functionality
+- **Redis Integration**: Uses Redis as the backend storage for scalability and persistence across processes
+- **Serialization**: Uses Python's pickle module to serialize complex objects (tuples, dictionaries, custom objects)
+- **Comprehensive Logging**: Detailed logging for debugging and monitoring cache operations
 
-Serialization: Uses Python's pickle module to serialize complex objects (tuples, dictionaries, custom objects)
+## Configuration
 
-Comprehensive Logging: Detailed logging for debugging and monitoring cache operations
-
-Configuration
 The system uses environment variables for Redis connection:
 
-REDIS_HOST: Redis server hostname (defaults to "redis")
-
-REDIS_PORT: Redis server port (defaults to 6379)
+- `REDIS_HOST`: Redis server hostname (defaults to "redis")
+- `REDIS_PORT`: Redis server port (defaults to 6379)
 
 This follows containerized deployment patterns where Redis runs as a separate service.
 
-Core Methods
-update_cache(key, value)
+## Core Methods
+
+### update_cache(key, value)
+
 Updates the cache with a key-value pair and sets TTL:
 
-Serializes the value using pickle.dumps() to handle complex Python objects
+- Serializes the value using `pickle.dumps()` to handle complex Python objects
+- Stores the serialized data in Redis using `cache.set()`
+- Sets expiration using `cache.expire()` - Redis automatically removes the key after TTL expires
+- Returns a tuple indicating success of both set and expire operations
 
-Stores the serialized data in Redis using cache.set()
+### retrieve_cache(key)
 
-Sets expiration using cache.expire() - Redis automatically removes the key after TTL expires
-
-Returns a tuple indicating success of both set and expire operations
-
-retrieve_cache(key)
 Retrieves and deserializes cached data:
 
-Fetches raw data from Redis using cache.get()
+- Fetches raw data from Redis using `cache.get()`
+- Deserializes using `pickle.loads()` to restore the original Python object
+- Handles cache misses gracefully by returning None
 
-Deserializes using pickle.loads() to restore the original Python object
+### delete_cache(key)
 
-Handles cache misses gracefully by returning None
-
-delete_cache(key)
 Explicitly removes cache entries:
 
-Deletes the key using cache.delete()
-
-Verifies deletion by checking both the delete count and key existence
-
-Logs the operation result for monitoring
+- Deletes the key using `cache.delete()`
+- Verifies deletion by checking both the delete count and key existence
+- Logs the operation result for monitoring
 
 # Test Cases `mcp-context-forge/plugins/external/llmguard/tests/test_llmguardplugin.py`
 
@@ -240,15 +245,6 @@ Logs the operation result for monitoring
 | test_llmguardplugin_prehook_sanitizers_invault_expiry | Tests internal vault TTL expiration | Validates that internal vault data expires and reinitializes after the configured vault_ttl period, preventing stale anonymization mappings |
 | test_llmguardplugin_sanitizers_vault_leak_detection | Tests vault information leak prevention | Validates that plugin detects and blocks attempts to extract anonymized vault data (e.g., requesting "[REDACTED_CREDIT_CARD_RE_1]") when vault_leak_detection is enabled |
 | test_llmguardplugin_sanitizers_anonymize_deanonymize | Tests complete anonymization workflow | Validates end-to-end anonymization of PII data in input prompts and successful deanonymization of LLM responses, ensuring sensitive data protection throughout the pipeline |
-
-
-
-
-
-
-
-
-
 
 ## Installation
 
