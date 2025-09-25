@@ -8,14 +8,14 @@ plugins:
     hooks: ["prompt_pre_fetch"]
     tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
     mode: "enforce"  # enforce | permissive | disabled
-    priority: 10
+    priority: 20
     conditions:
       # Apply to specific tools/servers
       - prompts: ["test_prompt"]
         server_ids: []  # Apply to all servers
         tenant_ids: []  # Apply to all tenants
     config:
-      cache_ttl: 60 #defined in seconds
+      cache_ttl: 120 #defined in seconds
       input:
         sanitizers:
           Anonymize:
@@ -44,8 +44,55 @@ plugins:
           Deanonymize:
             matching_strategy: exact
 
+    # Self-contained Search Replace Plugin
+  - name: "LLMGuardPluginInputFilter"
+    kind: "llmguardplugin.plugin.LLMGuardPlugin"
+    description: "A plugin for running input through llmguard scanners "
+    version: "0.1"
+    author: "MCP Context Forge Team"
+    hooks: ["prompt_pre_fetch"]
+    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    mode: "enforce"  # enforce | permissive | disabled
+    priority: 10
+    conditions:
+      # Apply to specific tools/servers
+      - prompts: ["test_prompt"]
+        server_ids: []  # Apply to all servers
+        tenant_ids: []  # Apply to all tenants
+    config:
+      input:
+        filters:
+          PromptInjection:
+            threshold: 0.6
+            use_onnx: false
+          policy: PromptInjection
+          policy_message: I'm sorry, I cannot allow this input.
+
+  # Self-contained Search Replace Plugin
+  - name: "LLMGuardPluginOutputFilter"
+    kind: "llmguardplugin.plugin.LLMGuardPlugin"
+    description: "A plugin for running input through llmguard scanners "
+    version: "0.1"
+    author: "MCP Context Forge Team"
+    hooks: ["prompt_post_fetch"]
+    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    mode: "enforce"  # enforce | permissive | disabled
+    priority: 20
+    conditions:
+      # Apply to specific tools/servers
+      - prompts: ["test_prompt"]
+        server_ids: []  # Apply to all servers
+        tenant_ids: []  # Apply to all tenants
+    config:
+      output:
+        filters:
+          Toxicity:
+              threshold: 0.5
+          policy: Toxicity
+          policy_message: I'm sorry, I cannot allow this output.
+
 # Plugin directories to scan
-plugin_dirs: 
+plugin_dirs:
   - "llmguardplugin"
 
 # Global plugin settings

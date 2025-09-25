@@ -54,7 +54,7 @@ LABEL maintainer="Context Forge MCP Gateway Team" \
 # App entrypoint
 ENTRYPOINT ["sh", "-c", "${HOME}/run-server.sh"]
 
-FROM builder as testing 
+FROM builder as testing
 
 COPY tests .
 RUN python3 -m uv pip install -e .[dev]

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """This module is used to dowload and pre-cache tokenizers to the skillet server."""
 
 try:

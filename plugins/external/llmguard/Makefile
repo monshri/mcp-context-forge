@@ -135,7 +135,7 @@ container-build-test:
 	@echo "✅ Built image: $(call get_image_name)"
 	$(CONTAINER_RUNTIME) images $(IMAGE_BASE)-testing:$(IMAGE_TAG)
 
-container-run-test: 
+ :
 	@echo "🚀 Running with $(CONTAINER_RUNTIME)..."
 	docker run mcpgateway/llmguardplugin-testing
 
@@ -428,14 +428,15 @@ serve:
 .PHONY: build
 build:
 	@$(MAKE) container-build
+	@$(MAKE) container-build-test
 
 .PHONY: start
 start:
-	@$(MAKE) container-run
+	docker compose up -d
 
 .PHONY: stop
 stop:
-	@$(MAKE) container-stop
+	docker compose down 
 
 .PHONY: clean
 clean:
