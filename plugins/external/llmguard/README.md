@@ -2,12 +2,12 @@
 
 A plugin that leverages the capabilities of llmguard library to apply guardrails on input and output prompts.
 
-Guardrails
+# Guardrails
 ==============================
 Guardrails refer to the safety measures and guidelines put in place to prevent agents and large language models (LLMs) from generating or promoting harmful, toxic, or misleading content.
 These guardrails are designed to mitigate the risks associated with LLMs, such as prompt injections, jailbreaking, spreading misinformation, toxic, or misleading context, data leakage etc.
 
-LLMGuardPlugin
+# LLMGuardPlugin
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Core functionalities:
@@ -52,6 +52,7 @@ A typical example of applying input and output filters:
 .. code-block:: yaml
 
 plugins:
+  
   # Self-contained Search Replace Plugin
   - name: "LLMGuardPluginFilter"
     kind: "llmguardplugin.plugin.LLMGuardPlugin"
@@ -83,7 +84,36 @@ plugins:
           policy_message: I'm sorry, I cannot allow this output.
 
 
+
+config: The config key is a nested dictionary structure that consists of configuration of the guardrail. The config can have two modes input and output. Here, if input key is non-empty guardrail is applied to the original input prompt entered by the user and if output key is non-empty then guardrail is applied on the model response that comes after the input has been passed to the model. You can choose to apply, only input, output or both for your use-case.
+
+Under the input or output keys, we have two types of guards that could be applied:
+
+filters: They reject or allow input or output, based on policy defined in the policy key for a filter. Their return type is boolean, to be True or False. They do not apply transformation on the input or output.
+You define the guards that you want to use within the filters key:
+
+filters:
+  filter1:
+    filter1_config1: <configuration for filter1>
+    ...
+  filter2:
+    filter2_config1: <configuration for filter2>
+    ...
+  policy: <your custom policy using filter1 and filter2>
+  policy_message: <your custom policy message>
+Once, you have done that, you can apply logical combinations of that filters using and, or, parantheses etc. The filters will be applied according to this policy. For performance reasons, only those filters will be initialized that has been defined in the policy, if no policy has been defined, then by default a logical and of all the filters will be applied as a default policy. The framework also gives you the liberty to define your own custom policy_message for denying an input or output.
+
+sanitizers: They basically transform an input or output. The sanitizers that have been defined would be applied sequentially to the input.
+
+
+
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 # Policy `mcp-context-forge/plugins/external/llmguard/llmguardplugin/policy.py`
+
 
 `GuardrailPolicy` : This class implements the policy evaluation system for the LLMGuardPlugin. Basically, after the input prompt or model response has been passed through input or output filters, if there is a `policy_expression` defined for input or output, it's evaluated using this class.
 Your `policy` or `policy_expression` could be any logical combination of filters and this class would be able to evaluate it.
