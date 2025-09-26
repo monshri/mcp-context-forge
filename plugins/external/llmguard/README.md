@@ -85,7 +85,8 @@ As part of initialization of input and output filters, for which `policy` could 
 
 Once the plugin is initialized and ready, you would see the following message in the plugin server logs:
 
-<img width="1249" height="210" alt="image" src="https://github.com/user-attachments/assets/98536a9f-38c3-490d-9c33-c090be4bc88a" />
+<img width="1180" height="206" alt="image" src="https://github.com/user-attachments/assets/a2468160-81e8-4d1a-8310-e8a9fbed664c" />
+
 
 
 The main functions which implement the input and output guardrails are:
