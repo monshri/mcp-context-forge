@@ -40,7 +40,6 @@ class LLMGuardConfig(BaseModel):
        cache_ttl: Time to live for cache defined in seconds
        input:  A set of sanitizers and filters applied on input
        output: A set of sanitizers and filters applied on output
-       
 
     Examples:
         >>> config =LLMGuardConfig(input=ModeConfig(filters= {"PromptInjection" : {"threshold" : 0.5}}))

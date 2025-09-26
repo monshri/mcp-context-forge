@@ -21,7 +21,7 @@ from llm_guard.output_scanners import Deanonymize
 
 # First-Party
 from llmguardplugin.schema import LLMGuardConfig
-from llmguardplugin.policy import GuardrailPolicy, get_policy_filters, word_wise_levenshtein_distance
+from llmguardplugin.policy import GuardrailPolicy, ResponseGuardrailPolicy, get_policy_filters, word_wise_levenshtein_distance
 from mcpgateway.services.logging_service import LoggingService
 
 
@@ -272,6 +272,7 @@ class LLMGuardBase():
                     "is_valid" which is boolean that says if the prompt is valid or not based on a scanner applied and "risk_score" which gives the risk score assigned by the scanner to the prompt.
         """
         result = {}
+        logger.info(f"Output scanners {self.scanners}")
         for scanner in self.scanners["output"]["filters"]:
             sanitized_prompt, is_valid, risk_score = scanner.scan(original_input, model_response)
             scanner_name = type(scanner).__name__
@@ -306,11 +307,11 @@ class LLMGuardBase():
             tuple with first element being policy decision (true or false), policy_message as the message sent by policy and result_scan a dict with all the scan results.
         """
         policy_expression = self.lgconfig.input.filters['policy'] if 'policy' in self.lgconfig.input.filters else " and ".join(list(self.lgconfig.input.filters))
-        policy_message = self.lgconfig.input.filters['policy_message'] if 'policy_message' in self.lgconfig.input.filters else "Request Forbidden"
+        policy_message = self.lgconfig.input.filters['policy_message'] if 'policy_message' in self.lgconfig.input.filters else ResponseGuardrailPolicy.DEFAULT_POLICY_DENIAL_RESPONSE.value
         policy = GuardrailPolicy()
         if not policy.evaluate(policy_expression, result_scan):
             return False, policy_message, result_scan
-        return True, policy_message, result_scan
+        return True, ResponseGuardrailPolicy.DEFAULT_POLICY_ALLOW_RESPONSE.value, result_scan
 
     def _apply_policy_output(self,result_scan) -> tuple[bool,str,dict[str,Any]]:
         """Applies policy on output
@@ -322,8 +323,8 @@ class LLMGuardBase():
             tuple with first element being policy decision (true or false), policy_message as the message sent by policy and result_scan a dict with all the scan results.
         """
         policy_expression = self.lgconfig.output.filters['policy'] if 'policy' in self.lgconfig.output.filters else " and ".join(list(self.lgconfig.output.filters))
-        policy_message = self.lgconfig.output.filters['policy_message'] if 'policy_message' in self.lgconfig.output.filters else "Request Forbidden"
+        policy_message = self.lgconfig.output.filters['policy_message'] if 'policy_message' in self.lgconfig.output.filters else ResponseGuardrailPolicy.DEFAULT_POLICY_DENIAL_RESPONSE.value
         policy = GuardrailPolicy()
         if not policy.evaluate(policy_expression, result_scan):
             return False, policy_message, result_scan
-        return True, policy_message, result_scan
+        return True, ResponseGuardrailPolicy.DEFAULT_POLICY_ALLOW_RESPONSE.value, result_scan

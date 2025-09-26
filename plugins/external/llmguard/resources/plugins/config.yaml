@@ -1,57 +1,12 @@
 plugins:
-  # Self-contained Search Replace Plugin
-  - name: "LLMGuardPluginInputSanitizer"
-    kind: "llmguardplugin.plugin.LLMGuardPlugin"
-    description: "A plugin for running input through llmguard scanners "
-    version: "0.1"
-    author: "MCP Context Forge Team"
-    hooks: ["prompt_pre_fetch"]
-    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
-    mode: "enforce"  # enforce | permissive | disabled
-    priority: 20
-    conditions:
-      # Apply to specific tools/servers
-      - prompts: ["test_prompt"]
-        server_ids: []  # Apply to all servers
-        tenant_ids: []  # Apply to all tenants
-    config:
-      cache_ttl: 120 #defined in seconds
-      input:
-        sanitizers:
-          Anonymize:
-            language: "en"
-            vault_ttl: 120 #defined in seconds
-            vault_leak_detection: True
-
-  - name: "LLMGuardPluginOutputSanitizer"
-    kind: "llmguardplugin.plugin.LLMGuardPlugin"
-    description: "A plugin for running input through llmguard scanners "
-    version: "0.1"
-    author: "MCP Context Forge Team"
-    hooks: ["prompt_post_fetch"]
-    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
-    mode: "enforce"  # enforce | permissive | disabled
-    priority: 10
-    conditions:
-      # Apply to specific tools/servers
-      - prompts: ["test_prompt"]
-        server_ids: []  # Apply to all servers
-        tenant_ids: []  # Apply to all tenants
-    config:
-      cache_ttl: 60 # defined in minutes
-      output:
-        sanitizers:
-          Deanonymize:
-            matching_strategy: exact
-
     # Self-contained Search Replace Plugin
-  - name: "LLMGuardPluginInputFilter"
+  - name: "LLMGuardPlugin"
     kind: "llmguardplugin.plugin.LLMGuardPlugin"
     description: "A plugin for running input through llmguard scanners "
     version: "0.1"
     author: "MCP Context Forge Team"
     hooks: ["prompt_pre_fetch"]
-    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    tags: ["plugin", "guardrails", "llmguard", "pre-post"]
     mode: "enforce"  # enforce | permissive | disabled
     priority: 10
     conditions:
@@ -60,36 +15,27 @@ plugins:
         server_ids: []  # Apply to all servers
         tenant_ids: []  # Apply to all tenants
     config:
+      set_guardrails_context: True
       input:
         filters:
           PromptInjection:
-            threshold: 0.6
+            threshold: 0.8
             use_onnx: false
-          policy: PromptInjection
-          policy_message: I'm sorry, I cannot allow this input.
-
-  # Self-contained Search Replace Plugin
-  - name: "LLMGuardPluginOutputFilter"
-    kind: "llmguardplugin.plugin.LLMGuardPlugin"
-    description: "A plugin for running input through llmguard scanners "
-    version: "0.1"
-    author: "MCP Context Forge Team"
-    hooks: ["prompt_post_fetch"]
-    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
-    mode: "enforce"  # enforce | permissive | disabled
-    priority: 20
-    conditions:
-      # Apply to specific tools/servers
-      - prompts: ["test_prompt"]
-        server_ids: []  # Apply to all servers
-        tenant_ids: []  # Apply to all tenants
-    config:
+          Toxicity:
+            threshold: 0.5
+          TokenLimit:
+            limit: 4096
+          policy: (PromptInjection and Toxicity) and TokenLimit
       output:
         filters:
           Toxicity:
-              threshold: 0.5
-          policy: Toxicity
-          policy_message: I'm sorry, I cannot allow this output.
+            threshold: 0.5
+          Regex:
+            patterns:
+              - 'Bearer [A-Za-z0-9-._~+/]+'
+            is_blocked: True
+            redact: False
+          policy: Toxicity and Regex
 
 # Plugin directories to scan
 plugin_dirs:
