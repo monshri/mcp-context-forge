@@ -19,9 +19,8 @@ from typing import Union
 class ResponseGuardrailPolicy(Enum):
     """Class to create custom messages responded by your guardrails"""
     DEFAULT_NORESPONSE_GUARDRAIL = "I'm sorry, I'm afraid I can't do that."
-    DEFAULT_NOSKILL = "No skill provided to apply guardrails"
-    DEFAULT_JAILBREAK = "Stop trying to jailbreak. I am a responsible assistant."
-    DEFAULT_NOCONFIG = "No guardrails configuration provided"
+    DEFAULT_POLICY_DENIAL_RESPONSE = "Request Forbidden"
+    DEFAULT_POLICY_ALLOW_RESPONSE = "Request Allowed"
 
 
 class GuardrailPolicy:

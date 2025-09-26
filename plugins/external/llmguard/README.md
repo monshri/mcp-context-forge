@@ -153,38 +153,37 @@ plugins:
 # Policy `mcp-context-forge/plugins/external/llmguard/llmguardplugin/policy.py`
 
 
-`GuardrailPolicy` : This class implements the policy evaluation system for the LLMGuardPlugin. Basically, after the input prompt or model response has been passed through input or output filters, if there is a `policy_expression` defined for input or output, it's evaluated using this class.
-Your `policy` or `policy_expression` could be any logical combination of filters and this class would be able to evaluate it.
+`GuardrailPolicy` : This class implements the policy evaluation system for the LLMGuardPlugin. Basically, after the input prompt or model response has been passed through input or output filters, if there is a policy_expression or `policy` defined for input or output section of config, it's evaluated using this class.
+Your `policy` could be any logical combination (with parantheses) of filters and this class `GuardrailPolicy` would be used to evaluate it.
 
-For example:
-
-# Simple expressions
-"Toxicity"
-"Toxicity and PromptInjection"
-"Toxicity or PromptInjection"
-
-# Complex expressions with grouping
-"(PromptInjection and Toxicity) and TokenLimit"
-
-
-# ResponseGuardrailPolicy Enum
-
-Predefined response messages for different guardrail scenarios:
-1. DEFAULT_NORESPONSE_GUARDRAIL: "I'm sorry, I'm afraid I can't do that."
-2. DEFAULT_DENIAL_MESSAGE = "Access Forbidden"
-
-# Helper Functions
-word_wise_levenshtein_distance(sentence1: str, sentence2: str) -> int
-Calculates the Levenshtein distance between two sentences at the word level.
-
-get_policy_filters(policy_expression: Union[str, dict]) -> Union[list, None]
-Extracts filter names from policy expressions, excluding reserved keywords like policy_message and policy
-
+For example in `mcp-context-forge/plugins/external/llmguard/examples/config-complex-policy.yaml`
+```yaml
+    config:
+      input:
+        filters:
+          PromptInjection:
+            threshold: 0.8
+            use_onnx: false
+          Toxicity:
+            threshold: 0.5
+          TokenLimit:
+            limit: 4096
+          policy: (PromptInjection and Toxicity) and TokenLimit
+      output:
+        filters:
+          Toxicity:
+            threshold: 0.5
+          Regex:
+            patterns:
+              - 'Bearer [A-Za-z0-9-._~+/]+'
+            is_blocked: True
+            redact: False
+          policy: Toxicity and Regex
+```
 
 # Guardrails Context
-The input when passed through guardrails a context is added for the scanners ran on the input. Also, 
-if there are any context that needs to be passed to other plugins. 
-For example - In the case of Anonymizer and Deanonymizer, in `context.state` or `context.global_context.state`, within the key `guardrails` information like original prompt, id of the vault used for anonymization etc is passed. This context is either utilized within the plugin or passed to other plugins.
+The input or output when passed through guardrails a context is added for the filters or sanitizers ran on the input or output. Also, if there are any context that needs to be passed to other plugins. 
+For example - In the case of Anonymizer and Deanonymizer, in `context.state` or `context.global_context.state`, within the key `guardrails` information like original prompt, id of the vault used for anonymization etc is passed. This context is either utilized within the plugin or passed to other plugins. If you want to pass the filters or scanners information in context, just enable it in config using ` set_guardrails_context: True`.p 
 
 
 ## Schema
@@ -210,6 +209,7 @@ The `LLMGuardConfig` class serves as the main configuration container with three
 - **input**: Optional `ModeConfig` instance defining sanitizers and filters applied to incoming prompts/requests
 
 - **output**: Optional `ModeConfig` instance defining sanitizers and filters applied to model responses
+- **set_guardrail_context**: If true, the context is set in the plugins
 
 
 
@@ -267,6 +267,219 @@ Explicitly removes cache entries:
 - Deletes the key using `cache.delete()`
 - Verifies deletion by checking both the delete count and key existence
 - Logs the operation result for monitoring
+
+
+# Vault Management 
+```yaml
+    config:
+          cache_ttl: 120 #defined in seconds
+          input:
+            sanitizers:
+              Anonymize:
+                language: "en"
+                vault_ttl: 120 #defined in seconds
+                vault_leak_detection: True
+          output:
+            sanitizers:
+              Deanonymize:
+                matching_strategy: exact
+```
+In the above configuration, `cache_ttl` is the key, that is used to determine the expiry time of vault across plugins. So, for cases like `Anonymize` and `Deanonymize` in the input and output filters respectively, if the plugins have been defined in individual plugins, vault information need to be passed in the plugin context. The keys are stored in the cache as above, and after reaching `cache_ttl` it deletes that key from the cache. For sharing cache within the above two plugins, we use redis, which has a configuration by itself, that can set expiry time for a key stored in cache, and automatically deletes itself after the expiry time has reached.
+
+However, there might be a case, where we need to share vault information for the above example within the same plugin, when both input and output  `Anonymize` and `Deanonymize` have been defined within the same plugin, in that case, vault needs to have a ttl. `vault_ttl` is used for that purpose, where an in-memory caching is used, and if the creation time of the vault has reached it's expiry in the current situation, then the vault gets deleted and new vault is assigned within the same plugin, having no history of past interactions.
+
+
+# Multiple Configurations of LLMGuardPlugin
+
+Sanitizers and Filters could be applied within the same plugin sequentially in configuration file like 
+or it could be applied as a separated plugin and be controlled by priority.
+
+1. Input filter, input sanitizer, output filter and output sanitizers within the same plugin
+2. Input filter, input sanitizer, output filter and output sanitizers in the separate plugins each
+
+## 1 Input filter, input sanitizer, output filter and output sanitizers within the same plugin
+
+```yaml
+    plugins:
+      # Self-contained Search Replace Plugin
+      - name: "LLMGuardPluginAll"
+        kind: "llmguardplugin.plugin.LLMGuardPlugin"
+        description: "A plugin for running input and output through llmguard scanners "
+        version: "0.1"
+        author: "MCP Context Forge Team"
+        hooks: ["prompt_pre_fetch","prompt_post_fetch"]
+        tags: ["plugin", "transformer", "llmguard", "pre-post"]
+        mode: "enforce"  # enforce | permissive | disabled
+        priority: 20
+        conditions:
+          # Apply to specific tools/servers
+          - prompts: ["test_prompt"]
+            server_ids: []  # Apply to all servers
+            tenant_ids: []  # Apply to all tenants
+        config:
+          cache_ttl: 120 #defined in seconds
+          input:
+            filters:
+                PromptInjection:
+                  threshold: 0.6
+                  use_onnx: false
+                policy: PromptInjection
+                policy_message: I'm sorry, I cannot allow this input.
+            sanitizers:
+              Anonymize:
+                language: "en"
+                vault_ttl: 120 #defined in seconds
+                vault_leak_detection: True
+          output:
+            sanitizers:
+              Deanonymize:
+                matching_strategy: exact
+            filters:
+              Toxicity:
+                  threshold: 0.5
+              policy: Toxicity
+              policy_message: I'm sorry, I cannot allow this output.
+
+
+    # Plugin directories to scan
+    plugin_dirs:
+      - "llmguardplugin"
+
+    # Global plugin settings
+    plugin_settings:
+      parallel_execution_within_band: true
+      plugin_timeout: 30
+      fail_on_plugin_error: false
+      enable_plugin_api: true
+      plugin_health_check_interval: 60
+```
+
+Here, the input filters, sanitizers, and output sanitizers and filters are applied within the same plugin sequentially.
+
+
+## 2   Input filter, input sanitizer, output filter and output sanitizers in separate plugins each
+
+```yaml
+plugins:
+  # Self-contained Search Replace Plugin
+  - name: "LLMGuardPluginInputSanitizer"
+    kind: "llmguardplugin.plugin.LLMGuardPlugin"
+    description: "A plugin for running input through llmguard scanners "
+    version: "0.1"
+    author: "MCP Context Forge Team"
+    hooks: ["prompt_pre_fetch"]
+    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    mode: "enforce"  # enforce | permissive | disabled
+    priority: 20
+    conditions:
+      # Apply to specific tools/servers
+      - prompts: ["test_prompt"]
+        server_ids: []  # Apply to all servers
+        tenant_ids: []  # Apply to all tenants
+    config:
+      cache_ttl: 120 #defined in seconds
+      input:
+        sanitizers:
+          Anonymize:
+            language: "en"
+            vault_ttl: 120 #defined in seconds
+            vault_leak_detection: True
+
+  - name: "LLMGuardPluginOutputSanitizer"
+    kind: "llmguardplugin.plugin.LLMGuardPlugin"
+    description: "A plugin for running input through llmguard scanners "
+    version: "0.1"
+    author: "MCP Context Forge Team"
+    hooks: ["prompt_post_fetch"]
+    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    mode: "enforce"  # enforce | permissive | disabled
+    priority: 10
+    conditions:
+      # Apply to specific tools/servers
+      - prompts: ["test_prompt"]
+        server_ids: []  # Apply to all servers
+        tenant_ids: []  # Apply to all tenants
+    config:
+      cache_ttl: 60 # defined in minutes
+      output:
+        sanitizers:
+          Deanonymize:
+            matching_strategy: exact
+
+    # Self-contained Search Replace Plugin
+  - name: "LLMGuardPluginInputFilter"
+    kind: "llmguardplugin.plugin.LLMGuardPlugin"
+    description: "A plugin for running input through llmguard scanners "
+    version: "0.1"
+    author: "MCP Context Forge Team"
+    hooks: ["prompt_pre_fetch"]
+    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    mode: "enforce"  # enforce | permissive | disabled
+    priority: 10
+    conditions:
+      # Apply to specific tools/servers
+      - prompts: ["test_prompt"]
+        server_ids: []  # Apply to all servers
+        tenant_ids: []  # Apply to all tenants
+    config:
+      input:
+        filters:
+          PromptInjection:
+            threshold: 0.6
+            use_onnx: false
+          policy: PromptInjection
+          policy_message: I'm sorry, I cannot allow this input.
+
+  # Self-contained Search Replace Plugin
+  - name: "LLMGuardPluginOutputFilter"
+    kind: "llmguardplugin.plugin.LLMGuardPlugin"
+    description: "A plugin for running input through llmguard scanners "
+    version: "0.1"
+    author: "MCP Context Forge Team"
+    hooks: ["prompt_post_fetch"]
+    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    mode: "enforce"  # enforce | permissive | disabled
+    priority: 20
+    conditions:
+      # Apply to specific tools/servers
+      - prompts: ["test_prompt"]
+        server_ids: []  # Apply to all servers
+        tenant_ids: []  # Apply to all tenants
+    config:
+      output:
+        filters:
+          Toxicity:
+              threshold: 0.5
+          policy: Toxicity
+          policy_message: I'm sorry, I cannot allow this output.
+
+# Plugin directories to scan
+plugin_dirs:
+  - "llmguardplugin"
+
+# Global plugin settings
+plugin_settings:
+  parallel_execution_within_band: true
+  plugin_timeout: 30
+  fail_on_plugin_error: false
+  enable_plugin_api: true
+  plugin_health_check_interval: 60
+```
+
+Here, we have utilized the priority functionality of plugins. Here, we have kept the priority of input filters to be 10 and input sanitizers to be 20, on `prompt_pre_fetch` and priority of output sanitizers to be 10 and output filters to be 20 on `prompt_post_fetch`. This ensures that for an input first the filter is applied, then sanitizers for any transformations on the input. And later in the output, the sanitizers for output is applied first and later the filters on it.
+
+# Misc Examples
+
+In the folder, `mcp-context-forge/plugins/external/llmguard/examples` there are multiple example usages of LLMGuardPlugin.
+
+
+| Example | File |
+|-----------|-------------|
+| All the filters and sanitizers within the same plugin | `mcp-context-forge/plugins/external/llmguard/examples/config-all-in-one.yaml`|
+| All the filters and sanitizers in separate 4 plugins | `mcp-context-forge/plugins/external/llmguard/examples/config-separate-plugins.yaml`|
+| Input and Output filter in separate plugins | `mcp-context-forge/plugins/external/llmguard/examples/config-input-output-filter.yaml`|
+| Input and Output sanitizers in separate plugins | `mcp-context-forge/plugins/external/llmguard/examples/config-input-output-sanitizer.yaml`|
+| Input and Output filter with complex policies within same plugins  | `mcp-context-forge/plugins/external/llmguard/examples/config-complex-policy.yaml`|
 
 # Test Cases `mcp-context-forge/plugins/external/llmguard/tests/test_llmguardplugin.py`
 
@@ -329,17 +542,16 @@ make lint-fix
 
 2. Suppose you are using the following combination of plugin configuration in `mcp-context-forge/plugins/external/llmguard/resources/plugins/config.yaml`
 
-```
-
+```yaml
     plugins:
       # Self-contained Search Replace Plugin
-      - name: "LLMGuardPluginInputSanitizer"
+      - name: "LLMGuardPluginAll"
         kind: "llmguardplugin.plugin.LLMGuardPlugin"
-        description: "A plugin for running input through llmguard scanners "
+        description: "A plugin for running input and output through llmguard scanners "
         version: "0.1"
         author: "MCP Context Forge Team"
-        hooks: ["prompt_pre_fetch"]
-        tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+        hooks: ["prompt_pre_fetch","prompt_post_fetch"]
+        tags: ["plugin", "transformer", "llmguard", "pre-post"]
         mode: "enforce"  # enforce | permissive | disabled
         priority: 20
         conditions:
@@ -350,79 +562,27 @@ make lint-fix
         config:
           cache_ttl: 120 #defined in seconds
           input:
+            filters:
+                PromptInjection:
+                  threshold: 0.6
+                  use_onnx: false
+                policy: PromptInjection
+                policy_message: I'm sorry, I cannot allow this input.
             sanitizers:
               Anonymize:
                 language: "en"
                 vault_ttl: 120 #defined in seconds
                 vault_leak_detection: True
-
-      - name: "LLMGuardPluginOutputSanitizer"
-        kind: "llmguardplugin.plugin.LLMGuardPlugin"
-        description: "A plugin for running input through llmguard scanners "
-        version: "0.1"
-        author: "MCP Context Forge Team"
-        hooks: ["prompt_post_fetch"]
-        tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
-        mode: "enforce"  # enforce | permissive | disabled
-        priority: 10
-        conditions:
-          # Apply to specific tools/servers
-          - prompts: ["test_prompt"]
-            server_ids: []  # Apply to all servers
-            tenant_ids: []  # Apply to all tenants
-        config:
-          cache_ttl: 60 # defined in minutes
           output:
             sanitizers:
               Deanonymize:
                 matching_strategy: exact
-
-        # Self-contained Search Replace Plugin
-      - name: "LLMGuardPluginInputFilter"
-        kind: "llmguardplugin.plugin.LLMGuardPlugin"
-        description: "A plugin for running input through llmguard scanners "
-        version: "0.1"
-        author: "MCP Context Forge Team"
-        hooks: ["prompt_pre_fetch"]
-        tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
-        mode: "enforce"  # enforce | permissive | disabled
-        priority: 10
-        conditions:
-          # Apply to specific tools/servers
-          - prompts: ["test_prompt"]
-            server_ids: []  # Apply to all servers
-            tenant_ids: []  # Apply to all tenants
-        config:
-          input:
-            filters:
-              PromptInjection:
-                threshold: 0.6
-                use_onnx: false
-              policy: PromptInjection
-              policy_message: I'm sorry, I cannot allow this input.
-
-      # Self-contained Search Replace Plugin
-      - name: "LLMGuardPluginOutputFilter"
-        kind: "llmguardplugin.plugin.LLMGuardPlugin"
-        description: "A plugin for running input through llmguard scanners "
-        version: "0.1"
-        author: "MCP Context Forge Team"
-        hooks: ["prompt_post_fetch"]
-        tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
-        mode: "enforce"  # enforce | permissive | disabled
-        priority: 20
-        conditions:
-          # Apply to specific tools/servers
-          - prompts: ["test_prompt"]
-            server_ids: []  # Apply to all servers
-            tenant_ids: []  # Apply to all tenants
-        config:
-          output:
             filters:
               Toxicity:
                   threshold: 0.5
               policy: Toxicity
               policy_message: I'm sorry, I cannot allow this output.
+
 
     # Plugin directories to scan
     plugin_dirs:
@@ -481,7 +641,11 @@ make lint-fix
 
 In your make serve logs you get the following errors:
 
-`2025-09-25 17:23:22,267 - mcpgateway - ERROR - Could not retrieve prompt test_prompt: pre_prompt_fetch blocked by plugin LLMGuardPluginInputFilter: deny - I'm sorry, I cannot allow this input. (PromptInjection detected in the prompt)`
+```bash
+2025-09-25 17:23:22,267 - mcpgateway - ERROR - Could not retrieve prompt test_prompt: pre_prompt_fetch blocked by plugin LLMGuardPluginInputFilter: deny - I'm sorry, I cannot allow this input. (PromptInjection detected in the prompt)
+```
+
+The above log verifies that the input as Prompt Injection was detected.
 
 
 
@@ -507,113 +671,3 @@ In your make serve logs you get the following errors:
 
 
 
-
-
-
-# Examples
-
-1. Input and Output filters in the same plugin
-2. Input and Output sanitizers in the same plugin
-3. Input and Output filters, sanitizers in the same plugin 
-4. Input filter, input sanitizer, output filter and output sanitizers in the separate plugins each
-
-
-## Example 4: Input filter, input sanitizer, output filter and output sanitizers in the separate plugins each
-
-.. code-block:: yaml
-  
-  plugins:
-    # Self-contained Search Replace Plugin
-    - name: "LLMGuardPluginInputSanitizer"
-      kind: "llmguardplugin.plugin.LLMGuardPlugin"
-      description: "A plugin for running input through llmguard scanners "
-      version: "0.1"
-      author: "MCP Context Forge Team"
-      hooks: ["prompt_pre_fetch"]
-      tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
-      mode: "enforce"  # enforce | permissive | disabled
-      priority: 20
-      conditions:
-        # Apply to specific tools/servers
-        - prompts: ["test_prompt"]
-          server_ids: []  # Apply to all servers
-          tenant_ids: []  # Apply to all tenants
-      config:
-        cache_ttl: 120 #defined in seconds
-        input:
-          sanitizers:
-            Anonymize:
-              language: "en"
-              vault_ttl: 120 #defined in seconds
-              vault_leak_detection: True
-
-    - name: "LLMGuardPluginOutputSanitizer"
-      kind: "llmguardplugin.plugin.LLMGuardPlugin"
-      description: "A plugin for running input through llmguard scanners "
-      version: "0.1"
-      author: "MCP Context Forge Team"
-      hooks: ["prompt_post_fetch"]
-      tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
-      mode: "enforce"  # enforce | permissive | disabled
-      priority: 10
-      conditions:
-        # Apply to specific tools/servers
-        - prompts: ["test_prompt"]
-          server_ids: []  # Apply to all servers
-          tenant_ids: []  # Apply to all tenants
-      config:
-        cache_ttl: 60 # defined in minutes
-        output:
-          sanitizers:
-            Deanonymize:
-              matching_strategy: exact
-
-      # Self-contained Search Replace Plugin
-    - name: "LLMGuardPluginInputFilter"
-      kind: "llmguardplugin.plugin.LLMGuardPlugin"
-      description: "A plugin for running input through llmguard scanners "
-      version: "0.1"
-      author: "MCP Context Forge Team"
-      hooks: ["prompt_pre_fetch"]
-      tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
-      mode: "enforce"  # enforce | permissive | disabled
-      priority: 10
-      conditions:
-        # Apply to specific tools/servers
-        - prompts: ["test_prompt"]
-          server_ids: []  # Apply to all servers
-          tenant_ids: []  # Apply to all tenants
-      config:
-        input:
-          filters:
-            PromptInjection:
-              threshold: 0.6
-              use_onnx: false
-            policy: PromptInjection
-            policy_message: I'm sorry, I cannot allow this input.
-
-    # Self-contained Search Replace Plugin
-    - name: "LLMGuardPluginOutputFilter"
-      kind: "llmguardplugin.plugin.LLMGuardPlugin"
-      description: "A plugin for running input through llmguard scanners "
-      version: "0.1"
-      author: "MCP Context Forge Team"
-      hooks: ["prompt_post_fetch"]
-      tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
-      mode: "enforce"  # enforce | permissive | disabled
-      priority: 20
-      conditions:
-        # Apply to specific tools/servers
-        - prompts: ["test_prompt"]
-          server_ids: []  # Apply to all servers
-          tenant_ids: []  # Apply to all tenants
-      config:
-        output:
-          filters:
-            Toxicity:
-                threshold: 0.5
-            policy: Toxicity
-            policy_message: I'm sorry, I cannot allow this output.
-
-Here, we have utilized the priority functionality of plugins. Here, we have kept the priority of input filters to be 10 and input sanitizers to be 20, on `prompt_pre_fetch` and priority of output sanitizers to be 10 and output filters to be 20 on `prompt_post_fetch`. This ensures that for an input first the filter is applied, then sanitizers for any transformations on the input. 
-And later in the output, the sanitizers for output is applied first and later the filters on it.

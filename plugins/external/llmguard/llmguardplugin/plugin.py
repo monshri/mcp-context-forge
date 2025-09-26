@@ -62,6 +62,33 @@ class LLMGuardPlugin(Plugin):
     def __verify_lgconfig(self):
         """Checks if the configuration provided for plugin is valid or not. It should either have input or output key atleast"""
         return self.lgconfig.input or self.lgconfig.output
+    
+    def __update_context(self, context, key, value) -> dict:
+        def update_context(context):
+            plugin_name = self.__class__.__name__
+            if plugin_name not in context.state[self.guardrails_context_key]:
+                context.state[self.guardrails_context_key][plugin_name] = {}
+            if key not in context.state[self.guardrails_context_key][plugin_name]:
+                context.state[self.guardrails_context_key][plugin_name][key] = value
+            else:
+                if isinstance(value,dict):
+                    for k,v in value.items():
+                        if k not in context.state[self.guardrails_context_key][plugin_name][key]:
+                            context.state[self.guardrails_context_key][plugin_name][key][k] = v
+                        else:
+                            if isinstance(v,dict):    
+                                for k_sub,v_sub in v.items():
+                                    context.state[self.guardrails_context_key][plugin_name][key][k][k_sub] = v_sub
+        if key == "context":
+            update_context(context)
+            update_context(context.global_context)
+        else:
+            if key not in context.state[self.guardrails_context_key]:
+                context.state[self.guardrails_context_key][key] = value
+            if key not in context.global_context.state[self.guardrails_context_key]:
+                context.global_context.state[self.guardrails_context_key][key] = value
+
+        
 
     async def prompt_pre_fetch(self, payload: PromptPrehookPayload, context: PluginContext) -> PromptPrehookResult:
         """The plugin hook to apply input guardrails on using llmguard.
@@ -74,22 +101,26 @@ class LLMGuardPlugin(Plugin):
             The result of the plugin's analysis, including whether the prompt can proceed.
         """
         logger.info(f"Processing payload {payload}")
+        
         if payload.args:
             for key in payload.args: 
                 # Set context to pass original prompt within and across plugins
                 if self.lgconfig.input.filters or self.lgconfig.input.sanitizers:
                     context.state[self.guardrails_context_key] = {}
                     context.global_context.state[self.guardrails_context_key] = {}
-                    context.state[self.guardrails_context_key]["original_prompt"] = payload.args[key]
-                    context.global_context.state[self.guardrails_context_key]["original_prompt"] = payload.args[key]
+                    self.__update_context(context,"original_prompt",payload.args[key])
                 
                 # Apply input filters if set in config
                 if self.lgconfig.input.filters:
+                    filters_context = {"input" : {"filters" : []}}
                     logger.info(f"Applying input guardrail filters on {payload.args[key]}")
                     result = self.llmguard_instance._apply_input_filters(payload.args[key])
+                    filters_context["input"]["filters"].append(result)
                     logger.info(f"Result of input guardrail filters: {result}")
                     decision = self.llmguard_instance._apply_policy_input(result)
                     logger.info(f"Result of policy decision: {decision}")
+                    if self.lgconfig.set_guardrails_context:
+                        self.__update_context(context,"context",filters_context)
                     if not decision[0]:
                         violation = PluginViolation(
                         reason=decision[1],
@@ -101,9 +132,13 @@ class LLMGuardPlugin(Plugin):
                 # Apply input sanitizers if set in config
                 if self.lgconfig.input.sanitizers:
                     # initialize a context key "guardrails"
+                    sanitizers_context = {"input" : {"sanitizers" : []}}
                     logger.info(f"Applying input guardrail sanitizers on {payload.args[key]}")
                     result = self.llmguard_instance._apply_input_sanitizers(payload.args[key])
+                    sanitizers_context["input"]["sanitizers"].append(result)
                     logger.info(f"Result of input guardrail sanitizers on {result}")
+                    if self.lgconfig.set_guardrails_context:
+                        self.__update_context(context,"context",sanitizers_context)
                     if not result:
                         violation = PluginViolation(
                         reason="Attempt to breach vault",
@@ -118,11 +153,10 @@ class LLMGuardPlugin(Plugin):
                         success, _ = self.cache.update_cache(vault_id,vault_tuples)
                         # If cache update was successful, then store it in the context to pass further
                         if success:
-                            context.global_context.state[self.guardrails_context_key]["vault_cache_id"] = vault_id
-                            context.state[self.guardrails_context_key]["vault_cache_id"] = vault_id
+                            if self.lgconfig.set_guardrails_context:
+                                self.__update_context(context,"vault_cache_id",vault_id)
                     payload.args[key] = result[0]
         
-        # Set context for the original prompt to be passed further
         return PromptPrehookResult(continue_processing=True,modified_payload=payload)
 
     async def prompt_post_fetch(self, payload: PromptPosthookPayload, context: PluginContext) -> PromptPosthookResult:
@@ -148,10 +182,15 @@ class LLMGuardPlugin(Plugin):
                     if self.guardrails_context_key in context.state:
                         original_prompt = context.state[self.guardrails_context_key]["original_prompt"] if "original_prompt" in context.state[self.guardrails_context_key] else ""
                         vault_id = context.state[self.guardrails_context_key]["vault_cache_id"] if "vault_cache_id" in context.state[self.guardrails_context_key] else None
+                    else:
+                        context.state[self.guardrails_context_key] = {}
                     if self.guardrails_context_key in context.global_context.state:
                         original_prompt = context.global_context.state[self.guardrails_context_key]["original_prompt"] if "original_prompt" in context.global_context.state[self.guardrails_context_key] else ""
                         vault_id = context.global_context.state[self.guardrails_context_key]["vault_cache_id"] if "vault_cache_id" in context.global_context.state[self.guardrails_context_key] else None
+                    else:
+                        context.global_context.state[self.guardrails_context_key] = {}
                 if self.lgconfig.output.sanitizers:
+                    sanitizers_context = {"output" : {"sanitizers" : []}}
                     text = message.content.text
                     logger.info(f"Applying output sanitizers on {text}")
                     if vault_id:
@@ -159,15 +198,22 @@ class LLMGuardPlugin(Plugin):
                         scanner_config = {"Deanonymize" : vault_obj}
                         self.llmguard_instance._update_output_sanitizers(scanner_config)
                     result = self.llmguard_instance._apply_output_sanitizers(original_prompt,text)
+                    sanitizers_context["output"]["sanitizers"].append(result)
+                    if self.lgconfig.set_guardrails_context:
+                        self.__update_context(context,"context",sanitizers_context)
                     logger.info(f"Result of output sanitizers: {result}")
                     message.content.text = result[0]
 
                 if self.lgconfig.output.filters:
+                    filters_context = {"output" : {"filters" : []}}
                     text = message.content.text
                     logger.info(f"Applying output guardrails on {text}")
                     result = self.llmguard_instance._apply_output_filters(original_prompt,text)
+                    filters_context["output"]["filters"].append(result)
                     decision = self.llmguard_instance._apply_policy_output(result)
                     logger.info(f"Policy decision on output guardrails: {decision}")
+                    if self.lgconfig.set_guardrails_context:
+                        self.__update_context(context,"context",filters_context)
                     if not decision[0]:
                             violation = PluginViolation(
                             reason=decision[1],

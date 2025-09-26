@@ -491,3 +491,68 @@ async def test_llmguardplugin_sanitizers_anonymize_deanonymize():
     result = await plugin.prompt_post_fetch(payload_result, context=context)
     expected_result = "My name is John Doe"
     assert result.modified_payload.result.messages[0].content.text == expected_result
+
+
+@pytest.mark.asyncio
+async def test_llmguardplugin_filters_complex_policies():
+    """Test plugin prompt prefetch hook for sanitizers.
+    The test should pass if the input passes with the policy defined."""
+    
+    config_input = {
+        "input" : {
+            "filters" : {
+                "PromptInjection" : {
+                    "threshold": 0.8,
+                    "use_onnx": False
+                },
+                "Toxicity": {
+                    "threshold" : 0.5
+                    },
+                "TokenLimit" : {
+                    "limit" : 4096
+                },
+                "policy": "(PromptInjection and Toxicity) and TokenLimit"
+                }
+        },    
+        "output" : {
+            "filters": {
+                "Toxicity" : {
+                    "threshold" : 0.5,
+                },
+                "Regex" : {
+                    "patterns" : ['Bearer [A-Za-z0-9-._~+/]+'],
+                    "is_blocked": True,
+                    "redact" : False
+                },
+                "policy": "Toxicity and Regex"
+            }
+        }
+               
+    }
+            
+    # Plugin directories to scan
+    config = PluginConfig(
+        name="test",
+        kind="llmguardplugin.LLMGuardPlugin",
+        hooks=["prompt_pre_fetch"],
+        config=config_input,
+    )
+
+    plugin = LLMGuardPlugin(config)
+    payload = PromptPrehookPayload(name="test_prompt", args={"arg0": "My name is John Doe and credit card info is 1234-5678-1111-1235"})
+    context = PluginContext(global_context=GlobalContext(request_id="1", server_id="2"))
+    result = await plugin.prompt_pre_fetch(payload, context)
+    assert result.violation.reason== "Request Forbidden"
+    assert "PromptInjection" in result.violation.details and "Toxicity" in result.violation.details and "TokenLimit" in result.violation.details
+
+    messages = [
+            Message(role=Role.USER, content=TextContent(type="text", text="Damn you!")),
+        ]
+
+    prompt_result = PromptResult(messages=messages)
+    payload_result = PromptPosthookPayload(name="test_prompt", result=prompt_result)
+    context = PluginContext(global_context=GlobalContext(request_id="1", server_id="2"))
+    result = await plugin.prompt_post_fetch(payload_result, context=context)
+    assert "Toxicity" in result.violation.details and "Regex" in result.violation.details
+
+
