@@ -475,7 +475,8 @@ In the folder, `mcp-context-forge/plugins/external/llmguard/examples` there are 
 | Input and Output sanitizers in separate plugins | `mcp-context-forge/plugins/external/llmguard/examples/config-input-output-sanitizer.yaml`|
 | Input and Output filter with complex policies within same plugins  | `mcp-context-forge/plugins/external/llmguard/examples/config-complex-policy.yaml`|
 
-# Test Cases `mcp-context-forge/plugins/external/llmguard/tests/test_llmguardplugin.py`
+### Test Cases 
+**File**:`mcp-context-forge/plugins/external/llmguard/tests/test_llmguardplugin.py`
 
 | Test Case | Description | Validation |
 |-----------|-------------|------------|
@@ -512,9 +513,9 @@ make install-editable
 2. Enable plugins in `.env`
 
 
-## Runtime (server)
 
-# Building and Testing
+
+## Building and Testing
 
 1. `make build` - This builds two images `llmguardplugin` and `llmguardplugin-testing`.
 2. `make start` - This starts three docker containers: `redis` for caching, `llmguardplugin` for the external plugin and `llmguardplugin-testing` for running test cases, since `llmguard` library had compatbility issues with some packages in `mcpgateway` so we kept the testing separate.
@@ -523,7 +524,7 @@ make install-editable
 **Note:** To enable logging, set `log_cli = true` in `tests/pytest.ini`.
 
 
-## Code Linting
+### Code Linting
 
 Before checking in any code for the project, please lint the code.  This can be done using:
 
