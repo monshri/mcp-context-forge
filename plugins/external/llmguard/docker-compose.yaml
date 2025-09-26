@@ -34,7 +34,6 @@ services:
   llmguardplugin-testing:
     container_name: llmguardplugin-testing
     image:  mcpgateway/llmguardplugin-testing:latest  # Use the local latest image. Run `make docker-prod` to build it.
-    restart: always
     env_file:
       - .env
     ports:

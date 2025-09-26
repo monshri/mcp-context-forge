@@ -18,6 +18,9 @@ try:
     config = {"vault": Vault()}
     llm_guard.input_scanners.Anonymize(config)
     llm_guard.output_scanners.Deanonymize(config)
+    config = {"patterns" : ["Bearer [A-Za-z0-9-._~+/]+"]},
+    llm_guard.output_scanners.Regex(patterns=[r"Bearer [A-Za-z0-9-._~+/]+"])
+    llm_guard.output_scanners.Toxicity()
 
 except ImportError:
     print("Skipping download of llm-guard models")

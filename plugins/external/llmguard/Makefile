@@ -135,10 +135,6 @@ container-build-test:
 	@echo "✅ Built image: $(call get_image_name)"
 	$(CONTAINER_RUNTIME) images $(IMAGE_BASE)-testing:$(IMAGE_TAG)
 
- :
-	@echo "🚀 Running with $(CONTAINER_RUNTIME)..."
-	docker run mcpgateway/llmguardplugin-testing
-
 container-run: container-check-image
 	@echo "🚀 Running with $(CONTAINER_RUNTIME)..."
 	-$(CONTAINER_RUNTIME) stop $(PROJECT_NAME) 2>/dev/null || true

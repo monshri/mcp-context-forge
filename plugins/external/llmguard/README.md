@@ -293,7 +293,7 @@ The LLMGuardPlugin could be configured in the following ways:
 ```yaml
     plugins:
       # Self-contained Search Replace Plugin
-      - name: "LLMGuardPluginAll"
+      - name: "LLMGuardPlugin"
         kind: "llmguardplugin.plugin.LLMGuardPlugin"
         description: "A plugin for running input and output through llmguard scanners "
         version: "0.1"
@@ -359,7 +359,7 @@ plugins:
     version: "0.1"
     author: "MCP Context Forge Team"
     hooks: ["prompt_pre_fetch"]
-    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    tags: ["plugin", "guardrails", "llmguard", "pre", "sanitizers"]
     mode: "enforce"  # enforce | permissive | disabled
     priority: 20
     conditions:
@@ -382,7 +382,7 @@ plugins:
     version: "0.1"
     author: "MCP Context Forge Team"
     hooks: ["prompt_post_fetch"]
-    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    tags: ["plugin", "guardrails", "llmguard", "post", "sanitizers"]
     mode: "enforce"  # enforce | permissive | disabled
     priority: 10
     conditions:
@@ -404,7 +404,7 @@ plugins:
     version: "0.1"
     author: "MCP Context Forge Team"
     hooks: ["prompt_pre_fetch"]
-    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    tags: ["plugin", "guardrails", "llmguard", "pre", "filters"]
     mode: "enforce"  # enforce | permissive | disabled
     priority: 10
     conditions:
@@ -428,7 +428,7 @@ plugins:
     version: "0.1"
     author: "MCP Context Forge Team"
     hooks: ["prompt_post_fetch"]
-    tags: ["plugin", "transformer", "llmguard", "regex", "pre-post"]
+    tags: ["plugin", "guardrails", "llmguard", "post", "filters"]
     mode: "enforce"  # enforce | permissive | disabled
     priority: 20
     conditions:
@@ -454,94 +454,10 @@ plugin_settings:
   plugin_timeout: 30
   fail_on_plugin_error: false
   enable_plugin_api: true
-  plugin_health_check_interval: 60
-```
-The configuration leverages plugin priority settings to control execution order in the processing pipeline. For input processing (prompt_pre_fetch), input filters are assigned priority 10 while input sanitizers get priority 20, ensuring filters run before sanitizers can perform their transformations on the input. For output processing (prompt_post_fetch), the order is reversed: output sanitizers receive priority 10 and output filters get priority 20. This means sanitizers process the output first, followed by filters. This priority-based approach creates a logical processing flow:
-
- - Input: Filters → Sanitizers (filter content first, then transform)
- - Output: Sanitizers → Filters (transform content first, then filter)
-
-
-# Misc Examples
-
-In the folder, `mcp-context-forge/plugins/external/llmguard/examples` there are multiple example usages of LLMGuardPlugin.
-
-
-| Example | File |
-|-----------|-------------|
-| All the filters and sanitizers within the same plugin | `mcp-context-forge/plugins/external/llmguard/examples/config-all-in-one.yaml`|
-| All the filters and sanitizers in separate 4 plugins | `mcp-context-forge/plugins/external/llmguard/examples/config-separate-plugins.yaml`|
-| Input and Output filter in separate plugins | `mcp-context-forge/plugins/external/llmguard/examples/config-input-output-filter.yaml`|
-| Input and Output sanitizers in separate plugins | `mcp-context-forge/plugins/external/llmguard/examples/config-input-output-sanitizer.yaml`|
-| Input and Output filter with complex policies within same plugins  | `mcp-context-forge/plugins/external/llmguard/examples/config-complex-policy.yaml`|
-
-### Test Cases 
-**File**:`mcp-context-forge/plugins/external/llmguard/tests/test_llmguardplugin.py`
-
-| Test Case | Description | Validation |
-|-----------|-------------|------------|
-| test_llmguardplugin_prehook | Tests prompt injection detection on input | Validates that PromptInjection filter successfully blocks malicious prompts attempting to leak credit card information and returns appropriate violation details |
-| test_llmguardplugin_posthook | Tests toxicity detection on output | Validates that Toxicity filter successfully blocks toxic language in LLM responses and applies configured policy message |
-| test_llmguardplugin_prehook_empty_policy_message | Tests default message handling for input filter | Validates that plugin uses default "Request Forbidden" message when policy_message is not configured in input filters |
-| test_llmguardplugin_prehook_empty_policy | Tests default policy behavior for input | Validates that plugin applies AND combination of all configured filters as default policy when no explicit policy is defined |
-| test_llmguardplugin_posthook_empty_policy | Tests default policy behavior for output | Validates that plugin applies AND combination of all configured filters as default policy for output filtering |
-| test_llmguardplugin_posthook_empty_policy_message | Tests default message handling for output filter | Validates that plugin uses default "Request Forbidden" message when policy_message is not configured in output filters |
-| test_llmguardplugin_invalid_config | Tests error handling for invalid configuration | Validates that plugin throws "Invalid configuration for plugin initialization" error when empty config is provided |
-| test_llmguardplugin_prehook_sanitizers_redisvault_expiry | Tests Redis cache TTL expiration | Validates that vault cache entries in Redis expire correctly after the configured cache_ttl period, ensuring proper cleanup of shared anonymization data |
-| test_llmguardplugin_prehook_sanitizers_invault_expiry | Tests internal vault TTL expiration | Validates that internal vault data expires and reinitializes after the configured vault_ttl period, preventing stale anonymization mappings |
-| test_llmguardplugin_sanitizers_vault_leak_detection | Tests vault information leak prevention | Validates that plugin detects and blocks attempts to extract anonymized vault data (e.g., requesting "[REDACTED_CREDIT_CARD_RE_1]") when vault_leak_detection is enabled |
-| test_llmguardplugin_sanitizers_anonymize_deanonymize | Tests complete anonymization workflow | Validates end-to-end anonymization of PII data in input prompts and successful deanonymization of LLM responses, ensuring sensitive data protection throughout the pipeline |
-|  test_llmguardplugin_filters_complex_policies| Tests complex policies both input and output | Validates that plugin applies complex combination of filters as defined in input and output modes |
-
-## Installation
-
-To install dependencies with dev packages (required for linting and testing):
-
-```bash
-make install-dev
+  plugin_health_check_interval: 60    
 ```
 
-Alternatively, you can also install it in editable mode:
-
-```bash
-make install-editable
-```
-
-## Setting up the development environment
-
-1. Copy .env.template .env
-2. Enable plugins in `.env`
-
-
-
-
-## Building and Testing
-
-1. `make build` - This builds two images `llmguardplugin` and `llmguardplugin-testing`.
-2. `make start` - This starts three docker containers: `redis` for caching, `llmguardplugin` for the external plugin and `llmguardplugin-testing` for running test cases, since `llmguard` library had compatbility issues with some packages in `mcpgateway` so we kept the testing separate.
-3. `make stop` - This stops three docker containers: `redis` for caching, `llmguardplugin` for the external plugin and `llmguardplugin-testing`.
-
-**Note:** To enable logging, set `log_cli = true` in `tests/pytest.ini`.
-
-
-### Code Linting
-
-Before checking in any code for the project, please lint the code.  This can be done using:
-
-```bash
-make lint-fix
-```
-
-## End to End LLMGuardPlugin with MCP Gateway
-
-1. Add a sample prompt in the prompt tab of MCP gateway.
-
-2. Suppose you are using the following combination of plugin configuration in `mcp-context-forge/plugins/external/llmguard/resources/plugins/config.yaml`
-
-3. Once, the above config has been set to `mcp-context-forge/plugins/external/llmguard/resources/plugins/config.yaml`. Run `make build` and `make start` to start the llmguardplugin server.
-
-4. Add the following to `plugins/config.yaml` file
-
+In this case you would add the following in `mcp-context-forge/plugins/external/llmguard/resources/plugins/config.yaml`
 ```yaml
   - name: "LLMGuardPluginInputFilter"
     kind: "external"
@@ -575,6 +491,101 @@ make lint-fix
       proto: STREAMABLEHTTP
       url: http://127.0.0.1:8001/mcp
 ```
+The configuration leverages plugin priority settings to control execution order in the processing pipeline. For input processing (prompt_pre_fetch), input filters are assigned priority 10 while input sanitizers get priority 20, ensuring filters run before sanitizers can perform their transformations on the input. For output processing (prompt_post_fetch), the order is reversed: output sanitizers receive priority 10 and output filters get priority 20. This means sanitizers process the output first, followed by filters. This priority-based approach creates a logical processing flow:
+
+ - Input: Filters → Sanitizers (filter content first, then transform)
+ - Output: Sanitizers → Filters (transform content first, then filter)
+
+
+# Misc Examples
+
+In the folder, `mcp-context-forge/plugins/external/llmguard/examples` there are multiple example usages of LLMGuardPlugin.
+
+
+| Example | File |
+|-----------|-------------|
+| All the filters and sanitizers within the same plugin | `mcp-context-forge/plugins/external/llmguard/examples/config-all-in-one.yaml`|
+| All the filters and sanitizers in separate 4 plugins | `mcp-context-forge/plugins/external/llmguard/examples/config-separate-plugins.yaml`|
+| Input and Output filter in separate plugins | `mcp-context-forge/plugins/external/llmguard/examples/config-input-output-filter.yaml`|
+| Input and Output sanitizers in separate plugins | `mcp-context-forge/plugins/external/llmguard/examples/config-input-output-sanitizer.yaml`|
+| Input and Output filter with complex policies within same plugins  | `mcp-context-forge/plugins/external/llmguard/examples/config-complex-policy.yaml`|
+
+## Installation
+
+To install dependencies with dev packages (required for linting and testing):
+
+```bash
+make install-dev
+```
+
+Alternatively, you can also install it in editable mode:
+
+```bash
+make install-editable
+```
+
+## Setting up the development environment
+
+1. Copy .env.template .env
+2. Enable plugins in `.env`
+
+
+## Building and Testing
+
+1. `make build` - This builds two images `llmguardplugin` and `llmguardplugin-testing`.
+2. `make start` - This starts three docker containers: `redis` for caching, `llmguardplugin` for the external plugin and `llmguardplugin-testing` for running test cases, since `llmguard` library had compatbility issues with some packages in `mcpgateway` so we kept the testing separate.
+3. `make stop` - This stops three docker containers: `redis` for caching, `llmguardplugin` for the external plugin and `llmguardplugin-testing`.
+
+### Test Cases 
+**File**:`mcp-context-forge/plugins/external/llmguard/tests/test_llmguardplugin.py`
+
+| Test Case | Description | Validation |
+|-----------|-------------|------------|
+| test_llmguardplugin_prehook | Tests prompt injection detection on input | Validates that PromptInjection filter successfully blocks malicious prompts attempting to leak credit card information and returns appropriate violation details |
+| test_llmguardplugin_posthook | Tests toxicity detection on output | Validates that Toxicity filter successfully blocks toxic language in LLM responses and applies configured policy message |
+| test_llmguardplugin_prehook_empty_policy_message | Tests default message handling for input filter | Validates that plugin uses default "Request Forbidden" message when policy_message is not configured in input filters |
+| test_llmguardplugin_prehook_empty_policy | Tests default policy behavior for input | Validates that plugin applies AND combination of all configured filters as default policy when no explicit policy is defined |
+| test_llmguardplugin_posthook_empty_policy | Tests default policy behavior for output | Validates that plugin applies AND combination of all configured filters as default policy for output filtering |
+| test_llmguardplugin_posthook_empty_policy_message | Tests default message handling for output filter | Validates that plugin uses default "Request Forbidden" message when policy_message is not configured in output filters |
+| test_llmguardplugin_invalid_config | Tests error handling for invalid configuration | Validates that plugin throws "Invalid configuration for plugin initialization" error when empty config is provided |
+| test_llmguardplugin_prehook_sanitizers_redisvault_expiry | Tests Redis cache TTL expiration | Validates that vault cache entries in Redis expire correctly after the configured cache_ttl period, ensuring proper cleanup of shared anonymization data |
+| test_llmguardplugin_prehook_sanitizers_invault_expiry | Tests internal vault TTL expiration | Validates that internal vault data expires and reinitializes after the configured vault_ttl period, preventing stale anonymization mappings |
+| test_llmguardplugin_sanitizers_vault_leak_detection | Tests vault information leak prevention | Validates that plugin detects and blocks attempts to extract anonymized vault data (e.g., requesting "[REDACTED_CREDIT_CARD_RE_1]") when vault_leak_detection is enabled |
+| test_llmguardplugin_sanitizers_anonymize_deanonymize | Tests complete anonymization workflow | Validates end-to-end anonymization of PII data in input prompts and successful deanonymization of LLM responses, ensuring sensitive data protection throughout the pipeline |
+|  test_llmguardplugin_filters_complex_policies| Tests complex policies both input and output | Validates that plugin applies complex combination of filters as defined in input and output modes |
+
+**Note:** To enable logging, set `log_cli = true` in `tests/pytest.ini`.
+
+
+### Code Linting
+
+Before checking in any code for the project, please lint the code.  This can be done using:
+
+```bash
+make lint-fix
+```
+
+## End to End LLMGuardPlugin with MCP Gateway
+
+1. Add a sample prompt in the prompt tab of MCP gateway. 
+Set `export PLUGINS_ENABLED=true`
+
+2. Suppose you are using the following combination of plugin configuration in `mcp-context-forge/plugins/external/llmguard/resources/plugins/config.yaml`
+
+3. Once, the above config has been set to `mcp-context-forge/plugins/external/llmguard/resources/plugins/config.yaml`. Run `make build` and `make start` to start the llmguardplugin server.
+
+4. Add the following to `plugins/config.yaml` file
+
+```yaml
+  - name: "LLMGuardPlugin"
+    kind: "external"
+    mode: "enforce"  # Don't fail if the server is unavailable
+    priority: 20 # adjust the priority
+    mcp:
+      proto: STREAMABLEHTTP
+      url: http://127.0.0.1:8001/mcp
+
+```
 
 5. Run `make serve`
 6. Now when you test from the UI, for example, as the input prompt has been denied by LLMGuardPlugin since it detected prompt injection in it:
@@ -588,5 +599,3 @@ In your make serve logs you get the following errors:
 ```
 
 The above log verifies that the input as Prompt Injection was detected.
-
-
