@@ -26,7 +26,7 @@ In the file `llmguard.py` the base class `LLMGuardBase()` implements core functi
 A typical configuration file for the plugin looks something like this:
 
 
-.. code-block:: yaml
+```yaml
 
     config:
           cache_ttl: 120 #defined in seconds
@@ -40,10 +40,10 @@ A typical configuration file for the plugin looks something like this:
             sanitizers:
               Deanonymize:
                 matching_strategy: exact
-
+```
 
   
-As part of plugin initialization, an instance of `LLMGuardBase()`, `CacheTTLDict()` is initailized. The configurations defined for the plugin are validated, and if none of the `input` or `output` keys are defined in the config, the plugin throws a `PluginError` with message "Invalid configuration for plugin initilialization".
+As part of plugin initialization, an instance of `LLMGuardBase()`, `CacheTTLDict()` is initailized. The configurations defined for the plugin are validated, and if none of the `input` or `output` keys are defined in the config, the plugin throws a `PluginError` with message `Invalid configuration for plugin initilialization`.
 The initialization of `LLMGuardBase()` instance initializes all the filters and scanners defined under the `config` key of plugin using the member functions of `LLMGuardBase()`: `_initialize_input_filters()`
 ,`_initialize_output_filters()`,`_initialize_input_sanitizers()` and `_initialize_output_sanitizers()`. 
 
@@ -55,6 +55,7 @@ Under the input or output keys, we have two types of guards that could be applie
 - **filters**: They reject or allow input or output, based on policy defined in the policy key for a filter. Their return type is boolean, to be True or False. They do not apply transformation on the input or output.
   You define the guards that you want to use within the filters key:
 
+```yaml
   filters:
     filter1:
       filter1_config1: <configuration for filter1>
@@ -64,6 +65,7 @@ Under the input or output keys, we have two types of guards that could be applie
       ...
     policy: <your custom policy using filter1 and filter2>
     policy_message: <your custom policy message>
+```
 
 Once, you have done that, you can apply logical combinations of that filters using and, or, parantheses etc. The filters will be applied according to this policy. For performance reasons, only those filters will be initialized that has been defined in the policy, if no policy has been defined, then by default a logical and of all the filters will be applied as a default policy. The framework also gives you the liberty to define your own custom policy_message for denying an input or output.
 
@@ -105,7 +107,7 @@ A typical example of applying input and output filters:
 
 ``config-input-output-filters.yaml``
 
-.. code-block:: yaml
+```yaml
 
 plugins:
   
@@ -146,7 +148,7 @@ plugins:
         sanitizers:
           Deanonymize:
             matching_strategy: exact
-
+```
 
 # Policy `mcp-context-forge/plugins/external/llmguard/llmguardplugin/policy.py`
 
@@ -327,7 +329,7 @@ make lint-fix
 
 2. Suppose you are using the following combination of plugin configuration in `mcp-context-forge/plugins/external/llmguard/resources/plugins/config.yaml`
 
-.. code-block:: yaml
+```
 
     plugins:
       # Self-contained Search Replace Plugin
@@ -433,11 +435,13 @@ make lint-fix
       fail_on_plugin_error: false
       enable_plugin_api: true
       plugin_health_check_interval: 60
+```
 
 3. Once, the above config has been set to `mcp-context-forge/plugins/external/llmguard/resources/plugins/config.yaml`. Run `make build` and `make start` to start the llmguardplugin server.
 
 4. Add the following to `plugins/config.yaml` file
 
+```yaml
   - name: "LLMGuardPluginInputFilter"
     kind: "external"
     mode: "enforce"  # Don't fail if the server is unavailable
@@ -469,6 +473,7 @@ make lint-fix
     mcp:
       proto: STREAMABLEHTTP
       url: http://127.0.0.1:8001/mcp
+```
 
 5. Run `make serve`
 6. Now when you test from the UI, for example, as the input prompt has been denied by LLMGuardPlugin since it detected prompt injection in it:
