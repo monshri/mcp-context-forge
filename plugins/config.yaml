@@ -750,11 +750,3 @@ plugins:
       vault_header_name: "X-Vault-Tokens"
       vault_handling: "raw"
       system_handling: "tag"
-  # LLMGuard Plugin - Applies guardrails (set of filters and sanitizers)
-  # - name: "LLMGuardPlugin"
-  #   kind: "external"
-  #   mode: "enforce"  # Don't fail if the server is unavailable
-  #   priority: 20 # adjust the priority
-  #   mcp:
-  #     proto: STREAMABLEHTTP
-  #     url: http://127.0.0.1:8001/mcp
