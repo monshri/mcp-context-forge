@@ -60,6 +60,9 @@ from mcpgateway.schemas import (
     GatewayUpdate,
     GlobalConfigRead,
     GlobalConfigUpdate,
+    PluginDetail,
+    PluginListResponse,
+    PluginStatsResponse,
     PromptCreate,
     PromptMetrics,
     PromptRead,
@@ -85,6 +88,7 @@ from mcpgateway.services.import_service import ImportError as ImportServiceError
 from mcpgateway.services.import_service import ImportService, ImportValidationError
 from mcpgateway.services.logging_service import LoggingService
 from mcpgateway.services.oauth_manager import OAuthManager
+from mcpgateway.services.plugin_service import get_plugin_service
 from mcpgateway.services.prompt_service import PromptNotFoundError, PromptService
 from mcpgateway.services.resource_service import ResourceNotFoundError, ResourceService
 from mcpgateway.services.root_service import RootService
@@ -2155,7 +2159,7 @@ async def admin_ui(
     if a2a_service and settings.mcpgateway_a2a_enabled:
         a2a_agents_raw = await a2a_service.list_agents_for_user(
             db,
-            user_email=user_email,
+            user_info=user_email,
             include_inactive=include_inactive,
         )
         a2a_agents = [agent.model_dump(by_alias=True) for agent in a2a_agents_raw]
@@ -8647,7 +8651,7 @@ async def admin_list_a2a_agents(
 
     agents = await a2a_service.list_agents_for_user(
         db,
-        user_email=user_email,
+        user_info=user_email,
         include_inactive=include_inactive,
     )
     return [agent.model_dump(by_alias=True) for agent in agents]
@@ -8721,12 +8725,6 @@ async def admin_add_a2a_agent(
             import_batch_id=metadata["import_batch_id"],
             federation_source=metadata["federation_source"],
         )
-
-        """
-        # Return redirect to admin page with A2A tab
-        root_path = request.scope.get("root_path", "")
-        return RedirectResponse(f"{root_path}/admin#a2a-agents", status_code=303)
-        """
 
         return JSONResponse(
             content={"message": "A2A agent created successfully!", "success": True},
@@ -9163,3 +9161,190 @@ async def get_gateways_section(
     except Exception as e:
         LOGGER.error(f"Error loading gateways section: {e}")
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+####################
+# Plugin Routes    #
+####################
+
+
+@admin_router.get("/plugins/partial")
+async def get_plugins_partial(request: Request, db: Session = Depends(get_db), user=Depends(get_current_user_with_permissions)) -> HTMLResponse:  # pylint: disable=unused-argument
+    """Render the plugins partial HTML template.
+
+    This endpoint returns a rendered HTML partial containing plugin information,
+    similar to the version_info_partial pattern. It's designed to be loaded via HTMX
+    into the admin interface.
+
+    Args:
+        request: FastAPI request object
+        db: Database session
+        user: Authenticated user
+
+    Returns:
+        HTMLResponse with rendered plugins partial template
+    """
+    LOGGER.debug(f"User {get_user_email(user)} requested plugins partial")
+
+    try:
+        # Get plugin service and check if plugins are enabled
+        plugin_service = get_plugin_service()
+
+        # Check if plugin manager is available in app state
+        plugin_manager = getattr(request.app.state, "plugin_manager", None)
+        if plugin_manager:
+            plugin_service.set_plugin_manager(plugin_manager)
+
+        # Get plugin data
+        plugins = plugin_service.get_all_plugins()
+        stats = plugin_service.get_plugin_statistics()
+
+        # Prepare context for template
+        context = {"request": request, "plugins": plugins, "stats": stats, "plugins_enabled": plugin_manager is not None, "root_path": request.scope.get("root_path", "")}
+
+        # Render the partial template
+        return request.app.state.templates.TemplateResponse("plugins_partial.html", context)
+
+    except Exception as e:
+        LOGGER.error(f"Error rendering plugins partial: {e}")
+        # Return error HTML that can be displayed in the UI
+        error_html = f"""
+        <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+            <strong class="font-bold">Error loading plugins:</strong>
+            <span class="block sm:inline">{str(e)}</span>
+        </div>
+        """
+        return HTMLResponse(content=error_html, status_code=500)
+
+
+@admin_router.get("/plugins", response_model=PluginListResponse)
+async def list_plugins(
+    request: Request,
+    search: Optional[str] = None,
+    mode: Optional[str] = None,
+    hook: Optional[str] = None,
+    tag: Optional[str] = None,
+    db: Session = Depends(get_db),  # pylint: disable=unused-argument
+    user=Depends(get_current_user_with_permissions),
+) -> PluginListResponse:
+    """Get list of all plugins with optional filtering.
+
+    Args:
+        request: FastAPI request object
+        search: Optional text search in name/description/author
+        mode: Optional filter by mode (enforce/permissive/disabled)
+        hook: Optional filter by hook type
+        tag: Optional filter by tag
+        db: Database session
+        user: Authenticated user
+
+    Returns:
+        PluginListResponse with list of plugins and statistics
+
+    Raises:
+        HTTPException: If there's an error retrieving plugins
+    """
+    LOGGER.debug(f"User {get_user_email(user)} requested plugin list")
+
+    try:
+        # Get plugin service
+        plugin_service = get_plugin_service()
+
+        # Check if plugin manager is available
+        plugin_manager = getattr(request.app.state, "plugin_manager", None)
+        if plugin_manager:
+            plugin_service.set_plugin_manager(plugin_manager)
+
+        # Get filtered plugins
+        if any([search, mode, hook, tag]):
+            plugins = plugin_service.search_plugins(query=search, mode=mode, hook=hook, tag=tag)
+        else:
+            plugins = plugin_service.get_all_plugins()
+
+        # Count enabled/disabled
+        enabled_count = sum(1 for p in plugins if p["status"] == "enabled")
+        disabled_count = sum(1 for p in plugins if p["status"] == "disabled")
+
+        return PluginListResponse(plugins=plugins, total=len(plugins), enabled_count=enabled_count, disabled_count=disabled_count)
+
+    except Exception as e:
+        LOGGER.error(f"Error listing plugins: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@admin_router.get("/plugins/stats", response_model=PluginStatsResponse)
+async def get_plugin_stats(request: Request, db: Session = Depends(get_db), user=Depends(get_current_user_with_permissions)) -> PluginStatsResponse:  # pylint: disable=unused-argument
+    """Get plugin statistics.
+
+    Args:
+        request: FastAPI request object
+        db: Database session
+        user: Authenticated user
+
+    Returns:
+        PluginStatsResponse with aggregated plugin statistics
+
+    Raises:
+        HTTPException: If there's an error getting plugin statistics
+    """
+    LOGGER.debug(f"User {get_user_email(user)} requested plugin statistics")
+
+    try:
+        # Get plugin service
+        plugin_service = get_plugin_service()
+
+        # Check if plugin manager is available
+        plugin_manager = getattr(request.app.state, "plugin_manager", None)
+        if plugin_manager:
+            plugin_service.set_plugin_manager(plugin_manager)
+
+        # Get statistics
+        stats = plugin_service.get_plugin_statistics()
+
+        return PluginStatsResponse(**stats)
+
+    except Exception as e:
+        LOGGER.error(f"Error getting plugin statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@admin_router.get("/plugins/{name}", response_model=PluginDetail)
+async def get_plugin_details(name: str, request: Request, db: Session = Depends(get_db), user=Depends(get_current_user_with_permissions)) -> PluginDetail:  # pylint: disable=unused-argument
+    """Get detailed information about a specific plugin.
+
+    Args:
+        name: Plugin name
+        request: FastAPI request object
+        db: Database session
+        user: Authenticated user
+
+    Returns:
+        PluginDetail with full plugin information
+
+    Raises:
+        HTTPException: If plugin not found
+    """
+    LOGGER.debug(f"User {get_user_email(user)} requested details for plugin {name}")
+
+    try:
+        # Get plugin service
+        plugin_service = get_plugin_service()
+
+        # Check if plugin manager is available
+        plugin_manager = getattr(request.app.state, "plugin_manager", None)
+        if plugin_manager:
+            plugin_service.set_plugin_manager(plugin_manager)
+
+        # Get plugin details
+        plugin = plugin_service.get_plugin_by_name(name)
+
+        if not plugin:
+            raise HTTPException(status_code=404, detail=f"Plugin '{name}' not found")
+
+        return PluginDetail(**plugin)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        LOGGER.error(f"Error getting plugin details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
