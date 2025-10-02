@@ -43,6 +43,7 @@ class BaseOPAInputKeys(BaseModel):
     response: Optional[dict[str, str]] = None
     payload: dict[str, Any]
     context: Optional[dict[str, Any]] = None
+    mode: str = None
 
 
 class OPAInput(BaseModel):

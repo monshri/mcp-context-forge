@@ -9,11 +9,12 @@ This module loads configurations for plugins and applies hooks on pre/post reque
 """
 
 # Standard
-from typing import Any
+from typing import Any, Union
 
 # Third-Party
 from opapluginfilter.schema import BaseOPAInputKeys, OPAConfig, OPAInput
 import requests
+from enum import Enum
 
 # First-Party
 from mcpgateway.plugins.framework import (
@@ -35,6 +36,14 @@ from mcpgateway.services.logging_service import LoggingService
 # Initialize logging service first
 logging_service = LoggingService()
 logger = logging_service.get_logger(__name__)
+
+
+class OPACodes(str,Enum):
+    ALLOW_CODE = "ALLOW"
+    DENIAL_CODE = "DENY"
+    AUDIT_CODE = "AUDIT"
+    REQUIRES_HUMAN_APPROVAL_CODE = "REQUIRES_APPROVAL"
+
 
 
 class OPAPluginFilter(Plugin):
@@ -111,6 +120,53 @@ class OPAPluginFilter(Plugin):
             logger.debug(f"OPA error: {rsp}")
         return True, None
 
+    def _preprocess_opa(self,policy_apply_config,payload,context,hook_type="tool_pre_invoke") -> dict:
+        result = {
+            "opa_server_url" : None,
+            "policy_context" : None,
+            "policy_input_data_map" : None
+        }
+        input_context = []
+        policy_context = {}
+        policy = None
+        policy_endpoint = None
+        policy_input_data_map = {}
+        hook_name = None
+        
+        if policy_apply_config: 
+            if "tool" in hook_type and policy_apply_config.tools:
+                hook_info = policy_apply_config.tools
+            elif "prompt" in hook_type and  policy_apply_config.prompts:
+                hook_info = policy_apply_config.prompts
+            elif "resource" in hook_type and  policy_apply_config.resources:
+                hook_info = policy_apply_config.resources
+            else:
+                logger.error("Error")
+                
+            for hook in hook_info:
+                hook_name = hook.name
+                if payload.name == "name":
+                    input_context = [ctx.rsplit(".", 1)[-1] for ctx in hook.context]
+                if self.opa_context_key in context.global_context.state:
+                    policy_context = {k: context.global_context.state[self.opa_context_key][k] for k in input_context}
+                if hook.extensions:
+                    policy = hook.extensions.get("policy", None)
+                    tool_policy_endpoints = hook.extensions.get("policy_endpoints", None)
+                    if tool_policy_endpoints:
+                        for endpoint in tool_policy_endpoints:
+                            policy_endpoint= endpoint if endpoint.contains(hook_type) else None
+                    policy_input_data_map = hook.extensions.get("policy_input_data_map", {})
+        
+        if not policy_endpoint:
+            logger.debug(f"Unconfigured endpoint for policy {hook_type} {hook_name} invocation:")
+            return None
+        
+        result["policy_context"] = policy_context
+        result["opa_server_url"] = "{opa_url}{policy}/{policy_endpoint}".format(opa_url=self.opa_config.opa_base_url, policy=policy, policy_endpoint=policy_endpoint)
+        result["policy_input_data_map"] = policy_input_data_map        
+        return result
+        
+
     async def prompt_pre_fetch(self, payload: PromptPrehookPayload, context: PluginContext) -> PromptPrehookResult:
         """The plugin hook run before a prompt is retrieved and rendered.
 
@@ -121,6 +177,21 @@ class OPAPluginFilter(Plugin):
         Returns:
             The result of the plugin's analysis, including whether the prompt can proceed.
         """
+        policy_apply_config = self._config.applied_to
+        if payload.args:
+            for key in payload.args:
+                text = payload.args[key]
+                opa_pre_prompt_input = self._preprocess_opa(policy_apply_config,payload,context,"prompt_pre_fetch")
+                if opa_pre_prompt_input:
+                    decision, decision_context = self._evaluate_opa_policy(url=opa_pre_tool_input["opa_server_url"], input=OPAInput(input=opa_pre_tool_input["opa_input"]), policy_input_data_map=opa_pre_tool_input["policy_input_data_map"])
+                    if not decision:
+                            violation = PluginViolation(
+                                reason="tool invocation not allowed",
+                                description="OPA policy denied for tool preinvocation",
+                                code=OPACodes.DENIAL_CODE,
+                                details=decision_context,
+                            )
+                            return ToolPreInvokeResult(modified_payload=payload, violation=violation, continue_processing=False)        
         return PromptPrehookResult(continue_processing=True)
 
     async def prompt_post_fetch(self, payload: PromptPosthookPayload, context: PluginContext) -> PromptPosthookResult:
@@ -152,39 +223,24 @@ class OPAPluginFilter(Plugin):
 
         if not payload.args:
             return ToolPreInvokeResult()
-
-        tool_context = []
-        policy_context = {}
-        tool_policy = None
-        tool_policy_endpoint = None
-        tool_policy_input_data_map = {}
+        
         # Get the tool for which policy needs to be applied
         policy_apply_config = self._config.applied_to
         if policy_apply_config and policy_apply_config.tools:
-            for tool in policy_apply_config.tools:
-                tool_name = tool.tool_name
-                if payload.name == tool_name:
-                    if tool.context:
-                        tool_context = [ctx.rsplit(".", 1)[-1] for ctx in tool.context]
-                    if self.opa_context_key in context.global_context.state:
-                        policy_context = {k: context.global_context.state[self.opa_context_key][k] for k in tool_context}
-                    if tool.extensions:
-                        tool_policy = tool.extensions.get("policy", None)
-                        tool_policy_endpoint = tool.extensions.get("policy_endpoint", None)
-                        tool_policy_input_data_map = tool.extensions.get("policy_input_data_map", {})
-
-                    opa_input = BaseOPAInputKeys(kind="tools/call", user="none", payload=payload.model_dump(), context=policy_context, request_ip="none", headers={}, response={})
-                    opa_server_url = "{opa_url}{policy}/{policy_endpoint}".format(opa_url=self.opa_config.opa_base_url, policy=tool_policy, policy_endpoint=tool_policy_endpoint)
-                    decision, decision_context = self._evaluate_opa_policy(url=opa_server_url, input=OPAInput(input=opa_input), policy_input_data_map=tool_policy_input_data_map)
-                    if not decision:
+            opa_pre_tool_input = self._preprocess_opa(policy_apply_config,payload,context,"tool")
+            if opa_pre_tool_input:
+                decision, decision_context = self._evaluate_opa_policy(url=opa_pre_tool_input["opa_server_url"], input=OPAInput(input=opa_pre_tool_input["opa_input"]), policy_input_data_map=opa_pre_tool_input["policy_input_data_map"])
+                if not decision:
                         violation = PluginViolation(
                             reason="tool invocation not allowed",
                             description="OPA policy denied for tool preinvocation",
-                            code="deny",
+                            code=OPACodes.DENIAL_CODE,
                             details=decision_context,
                         )
                         return ToolPreInvokeResult(modified_payload=payload, violation=violation, continue_processing=False)
+        
         return ToolPreInvokeResult(continue_processing=True)
+
 
     async def tool_post_invoke(self, payload: ToolPostInvokePayload, context: PluginContext) -> ToolPostInvokeResult:
         """Plugin hook run after a tool is invoked. The response of the tool passes through this hook and opa policy is evaluated on it
@@ -197,4 +253,37 @@ class OPAPluginFilter(Plugin):
         Returns:
             The result of the plugin's analysis, including whether the tool result should proceed.
         """
+        logger.info(f"here is the payload {payload.result}")
+        
+        if not payload.result:
+            return ToolPostInvokeResult()
+        
+        result_text = []
+        if hasattr(payload.result,"content"):
+            if isinstance(payload.result.content, list):
+                for item in payload.result.content:
+                    if hasattr(item, "text") and isinstance(item.text, str):
+                        result_text.append(item.text)
+                    elif hasattr(item,"text") and isinstance(item.text,dict):
+                        for value in item.values():
+                            if isinstance(value, str):
+                                result_text.append(value)
+                    else:
+                        logger.debug("The input doesn't have text attribute")
+
+    
+        policy_apply_config = self._config.applied_to
+        if policy_apply_config and policy_apply_config.tools:
+            opa_post_tool_input = self._preprocess_opa(policy_apply_config,payload,context,"tool")
+            if opa_post_tool_input:
+                opa_input = BaseOPAInputKeys(kind="post_tool", user="none", payload=result_text, context=opa_post_tool_input["policy_context"], request_ip="none", headers={}, response={}, mode="output")
+                decision, decision_context = self._evaluate_opa_policy(url=opa_post_tool_input["opa_server_url"], input=OPAInput(input=opa_input), policy_input_data_map=opa_post_tool_input["policy_input_data_map"])
+                if not decision:
+                        violation = PluginViolation(
+                            reason="tool invocation not allowed",
+                            description="OPA policy denied for tool postinvocation",
+                            code=OPACodes.DENIAL_CODE,
+                            details=decision_context,
+                        )
+                        return ToolPostInvokeResult(modified_payload=payload, violation=violation, continue_processing=False)
         return ToolPostInvokeResult(continue_processing=True)
