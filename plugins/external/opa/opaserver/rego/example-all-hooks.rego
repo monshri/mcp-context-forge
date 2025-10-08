@@ -8,7 +8,6 @@
 package example
 
 
-
 # Default policy values for all the policies
 default allow_tool_pre_invoke := false
 default allow_tool_post_invoke := false
@@ -17,65 +16,61 @@ default allow_prompt_post_fetch := false
 default allow_resource_pre_fetch := false
 default allow_resource_post_fetch := false
 
-password_pattern := `^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*\W)(?!.* ).{8,16}$`
-curse_words := {"curseword1", "curseword2", "curseword3"}
-disallowed_resources := {"root"}
+barred_pattern := `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z0-9-.]+`
 
+contains_word(pattern) if {
+	some key
+    value := input.payload.args[key]
+    contains(value,pattern)
+}
 
+parse_url_regex(url) := components if {
+    # Regex pattern: (protocol)://(domain)(port)?(path)?
+    pattern := `(https?)://([^:^/]*)(:\d*)?(.*)?`
+    matches := regex.find_all_string_submatch_n(pattern, url, 1)
+    
+    match := matches[0]
+    components := {
+        "protocol": match[1],
+        "domain": match[2],
+        "port": trim_prefix(match[3], ":"),
+        "path": match[4]
+    }
+}
 
-
+contains_regex_pattern if {
+    some i
+    value := input.payload.text[i]
+    output := regex.find_all_string_submatch_n(barred_pattern, value, -1)
+    count(output)>0
+}
 
 allow_tool_pre_invoke if {
-    contains(input.payload.args.repo_path, "IBM")
+    input.mode == "input"
+    contains_word("IBM")
 }
 
 allow_prompt_pre_fetch if {
-    some i
-    word := curse_words[_]
-    lower(input.text) == input_text
-    contains(input_text, word)
-    msg = sprintf("Input contains disallowed word: %s", [word])
+    input.mode == "input"
+    not contains_word("curseword1")
 }
-
-allow_resource_pre_fetch if {
-    some i
-    word := disallowed_resources[_]
-    lower(input.text) == input_text
-    contains(input_text, word)
-    msg = sprintf("Input contains disallowed resource: %s", [word])
-    contains(input.payload.args.repo_path, "IBM")
-}
-
-
-
-
 
 allow_tool_post_invoke if {
     input.mode == "output"
-    not contains_password
+    not contains_regex_pattern
 }
 
 allow_prompt_post_fetch if {
     input.mode == "output"
-    not contains_password
+    not contains_regex_pattern
 }
 
 allow_resource_post_fetch if {
     input.mode == "output"
-    not contains_password
+    not contains_regex_pattern
 }
 
-# This rule checks if the input contains a value matching the pattern.
-contains_password {
-    some i
-    value := input.payload[i]
-    regex.match(password_pattern, value)
+allow_resource_pre_fetch if {
+	components := parse_url_regex(input.payload.uri)
+	not contains(components.path, "root")
 }
-
-
-
-
-
-
-
-
