@@ -40,7 +40,6 @@ class BaseOPAInputKeys(BaseModel):
     user: Optional[str] = None
     request_ip: Optional[str] = None
     headers: Optional[dict[str, str]] = None
-    response: Optional[dict[str, str]] = None
     payload: dict[str, Any]
     context: Optional[dict[str, Any]] = None
     mode: str = None
@@ -69,3 +68,4 @@ class OPAConfig(BaseModel):
 
     # Base url on which opa server is running
     opa_base_url: str = "None"
+
