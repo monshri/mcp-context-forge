@@ -404,7 +404,9 @@ lock:
 
 .PHONY: test
 test:
+	opa run --server ./opaserver/rego/example.rego &
 	pytest tests
+	pkill opa
 
 .PHONY: serve
 serve:

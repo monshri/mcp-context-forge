@@ -16,9 +16,6 @@ plugins:
             policy_endpoints: 
               - "allow_tool_pre_invoke"
               - "allow_tool_post_invoke"
-            policy_input_data_map:
-              "context.git_context": "git_context"
-              "payload.args.repo_path": "repo_path"
             policy_modality: 
               - "text"
       prompts:
@@ -28,20 +25,15 @@ plugins:
             policy_endpoints: 
               - "allow_prompt_pre_fetch"
               - "allow_prompt_post_fetch"
-            policy_input_data_map:
-              "context.git_context": "git_context"
-              "payload.args.repo_path": "repo_path"
             policy_modality: 
               - "text"
       resources:
-        - resource_uri: "https://example.com/docs"
+        - resource_uri: "https://example.com"
           extensions:
             policy: "example"
             policy_endpoints: 
               - "allow_resource_pre_fetch"
               - "allow_resource_post_fetch"
-            policy_input_data_map:
-              "payload.content.uri": "uri"
             policy_modality: 
               - "text"
 

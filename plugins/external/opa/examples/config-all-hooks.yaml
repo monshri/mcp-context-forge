@@ -6,21 +6,16 @@ plugins:
     author: "Shriti Priya"
     hooks: ["tool_pre_invoke","tool_post_invoke", "prompt_pre_fetch", "prompt_post_fetch", "resource_pre_fetch", "resource_post_fetch"]
     tags: ["plugin"]
-    mode: "permissive"  # enforce | permissive | disabled
+    mode: "enforce"  # enforce | permissive | disabled
     priority: 30
     applied_to:
       tools:
-        - tool_name: "fast-time-git-status"
+        - tool_name: "test_tool"
           extensions:
             policy: "example"
             policy_endpoints: 
               - "allow_tool_pre_invoke"
               - "allow_tool_post_invoke"
-            policy_input_data_map:
-              "context.git_context": "git_context"
-              "payload.args.repo_path": "repo_path"
-            policy_modality: 
-              - "text"
       prompts:
         - prompt_name: "test_prompt"
           extensions:
@@ -28,22 +23,13 @@ plugins:
             policy_endpoints: 
               - "allow_prompt_pre_fetch"
               - "allow_prompt_post_fetch"
-            policy_input_data_map:
-              "context.git_context": "git_context"
-              "payload.args.repo_path": "repo_path"
-            policy_modality: 
-              - "text"
       resources:
-        - resource_uri: "https://example.com/docs"
+        - resource_uri: "test_resource"
           extensions:
             policy: "example"
             policy_endpoints: 
-              - "allow_resource_pre_fetch"
-              - "allow_resource_post_fetch"
-            policy_input_data_map:
-              "payload.content.uri": "uri"
-            policy_modality: 
-              - "text"
+              - "allow_tool_pre_invoke"
+              - "allow_tool_post_invoke"
 
     conditions:
       # Apply to specific tools/servers

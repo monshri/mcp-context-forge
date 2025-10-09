@@ -207,7 +207,7 @@ class OPAPluginFilter(Plugin):
                         policy_input_data_map = hook.extensions.get("policy_input_data_map", {})
                         policy_modality = hook.extensions.get("policy_modality", ["text"])
                         if policy_endpoints:
-                            policy_endpoint = next((endpoint for endpoint in policy_endpoints if hook_type in endpoint),None)
+                            policy_endpoint = next((endpoint for endpoint in policy_endpoints if hook_type in endpoint),"allow")
         
         if not policy_endpoint:
             logger.debug(f"Unconfigured endpoint for policy {hook_type} {hook_name} invocation")
@@ -265,7 +265,7 @@ class OPAPluginFilter(Plugin):
         
         if not payload.args:
             return PromptPosthookResult()
- 
+
         policy_apply_config = self._config.applied_to
         if policy_apply_config and policy_apply_config.prompts:
             opa_pre_prompt_input = self._preprocess_opa(policy_apply_config,payload,context,hook_type)
@@ -322,8 +322,8 @@ class OPAPluginFilter(Plugin):
                             code=OPACodes.DENIAL_CODE,
                             details=decision_context,
                         )
-                        return ToolPostInvokeResult(modified_payload=payload, violation=violation, continue_processing=False)
-        return ToolPostInvokeResult(continue_processing=True)
+                        return PromptPosthookResult(modified_payload=payload, violation=violation, continue_processing=False)
+        return PromptPosthookResult(continue_processing=True)
 
     async def tool_pre_invoke(self, payload: ToolPreInvokePayload, context: PluginContext) -> ToolPreInvokeResult:
         """OPA Plugin hook run before a tool is invoked. This hook takes in payload and context and further evaluates rego
@@ -344,9 +344,8 @@ class OPAPluginFilter(Plugin):
         if not payload.args:
             return ToolPreInvokeResult()
 
-        headers = payload.headers if hasattr(payload,"headers") and len(payload.headers)>0 else {}
+        headers = payload.headers if hasattr(payload,"headers") and not payload.headers else {}
         policy_apply_config = self._config.applied_to
-        
         if policy_apply_config and policy_apply_config.tools:
             opa_pre_tool_input = self._preprocess_opa(policy_apply_config,payload,context,hook_type)
             if opa_pre_tool_input:
@@ -381,7 +380,6 @@ class OPAPluginFilter(Plugin):
         
         if not payload.result:
             return ToolPostInvokeResult()
-        
         policy_apply_config = self._config.applied_to
         if policy_apply_config and policy_apply_config.tools:
             opa_post_tool_input = self._preprocess_opa(policy_apply_config,payload,context,hook_type)
@@ -389,9 +387,10 @@ class OPAPluginFilter(Plugin):
                 result = dict.fromkeys(opa_post_tool_input["policy_modality"],[])
             
             if isinstance(payload.result,dict):
-                if "content" in payload.result:
-                    for key in opa_post_tool_input["policy_modality"]:
-                        self._extract_payload_key(payload.result["content"],key,result)
+                content = payload.result["content"] if "content" in payload.result else payload.result
+                for key in opa_post_tool_input["policy_modality"]:
+                        self._extract_payload_key(content,key,result)
+                
                 opa_input = BaseOPAInputKeys(kind=hook_type, user="none", payload=result, context=opa_post_tool_input["policy_context"], request_ip="none", headers={},mode="output")
                 decision, decision_context = self._evaluate_opa_policy(url=opa_post_tool_input["opa_server_url"], input=OPAInput(input=opa_input), policy_input_data_map=opa_post_tool_input["policy_input_data_map"])
                 if not decision:
