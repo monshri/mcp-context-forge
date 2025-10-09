@@ -227,21 +227,16 @@ curl -X POST -H "Content-Type: application/json" \
 
 In `policy.rego` file, the policy defaults to denying all requests unless specific conditions are met. It enforces security through pattern detection and filtering:
 
-**Email**: Uses regex (barred_pattern) to detect email-like strings in text payloads, blocking outputs containing sensitive patterns
-
-**Keyword Filtering**: Searches for specific words (e.g., "IBM") in request arguments and blocks profanity ("curseword1") in prompt inputs
-
-**URL Validation**: Parses URIs to extract protocol, domain, port, and path components, then blocks resource access containing "root" in the path
+1. **Email**: Uses regex (barred_pattern) to detect email-like strings in text payloads, blocking outputs containing sensitive patterns
+2. **Keyword Filtering**: Searches for specific words (e.g., "IBM") in request arguments and blocks profanity ("curseword1") in prompt inputs
+3. **URL Validation**: Parses URIs to extract protocol, domain, port, and path components, then blocks resource access containing "root" in the path
 
 The test file `test_opapluginfilter.py` validates OPA plugin behavior at six different hook points for tools, prompts, and resources:
 
-**Tool Invocation Hooks** - Two tests (test_pre_tool_invoke_opapluginfilter and test_post_tool_invoke_opapluginfilter) verify policy enforcement before and after tool execution. Each test validates both benign requests (e.g., /path/IBM) that pass policy checks and malicious requests (e.g., /path/ibm or emails) that are correctly blocked by defined policy in `policy.rego` file.
-
-**Prompt Fetch Hooks** - Two tests (test_pre_prompt_fetch_opapluginfilter and test_post_prompt_fetch_opapluginfilter) ensure policies properly filter prompt arguments and results. Tests check text content for prohibited patterns like specific curse words or email addresses.
-
-**Resource Fetch Hooks** - Two tests (test_pre_resource_fetch_opapluginfilter and test_post_resource_fetch_opapluginfilter) validate policy enforcement on resource URIs and content. Tests verify that restricted paths (e.g., /root) and email-containing content are denied while safe content is allowed.
-
-**Backward Compatibility** - One test (test_opapluginfilter_backward_compatibility) confirms the plugin supports legacy policy endpoint naming conventions using the generic allow endpoint instead of hook-specific endpoints.
+1. **Tool Invocation Hooks** - Two tests (test_pre_tool_invoke_opapluginfilter and test_post_tool_invoke_opapluginfilter) verify policy enforcement before and after tool execution. Each test validates both benign requests (e.g., /path/IBM) that pass policy checks and malicious requests (e.g., /path/ibm or emails) that are correctly blocked by defined policy in `policy.rego` file.
+2. **Prompt Fetch Hooks** - Two tests (test_pre_prompt_fetch_opapluginfilter and test_post_prompt_fetch_opapluginfilter) ensure policies properly filter prompt arguments and results. Tests check text content for prohibited patterns like specific curse words or email addresses.
+3. **Resource Fetch Hooks** - Two tests (test_pre_resource_fetch_opapluginfilter and test_post_resource_fetch_opapluginfilter) validate policy enforcement on resource URIs and content. Tests verify that restricted paths (e.g., /root) and email-containing content are denied while safe content is allowed.
+4. **Backward Compatibility** - One test (test_opapluginfilter_backward_compatibility) confirms the plugin supports legacy policy endpoint naming conventions using the generic allow endpoint instead of hook-specific endpoints.
 
 To run the test cases, run the following command:
 1. As a first step, first install OPA in your development machine. 
