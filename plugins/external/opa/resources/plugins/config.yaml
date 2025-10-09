@@ -13,28 +13,28 @@ plugins:
         - tool_name: "fast-time-git-status"
           extensions:
             policy: "example"
-            policy_endpoints: 
+            policy_endpoints:
               - "allow_tool_pre_invoke"
               - "allow_tool_post_invoke"
-            policy_modality: 
+            policy_modality:
               - "text"
       prompts:
         - prompt_name: "test_prompt"
           extensions:
             policy: "example"
-            policy_endpoints: 
+            policy_endpoints:
               - "allow_prompt_pre_fetch"
               - "allow_prompt_post_fetch"
-            policy_modality: 
+            policy_modality:
               - "text"
       resources:
         - resource_uri: "https://example.com"
           extensions:
             policy: "example"
-            policy_endpoints: 
+            policy_endpoints:
               - "allow_resource_pre_fetch"
               - "allow_resource_post_fetch"
-            policy_modality: 
+            policy_modality:
               - "text"
 
     conditions:

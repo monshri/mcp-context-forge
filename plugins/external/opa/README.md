@@ -84,8 +84,8 @@ In the `config` key in `config.yaml` for the OPA plugin, the following attribute
 `opa_base_url` : It is the base url on which opa server is running.
 
 
-In the `config.yaml` file you can specify the information related to which particular tool, prompt or resource, you want to apply policies on. Since, all the tools in the gateway might have different modalities like text, image, etc, you can specify the modality to be used in policy. The result might have different types of content in it, could be image, text etc and using this `policy_modality` endpoint basically, you specify that type of content you extract from the result and apply policy on. This is particularly used in post hook, since the result could be a union of 
-`Union[TextContent, JSONContent, ImageContent, ResourceContent]`. 
+In the `config.yaml` file you can specify the information related to which particular tool, prompt or resource, you want to apply policies on. Since, all the tools in the gateway might have different modalities like text, image, etc, you can specify the modality to be used in policy. The result might have different types of content in it, could be image, text etc and using this `policy_modality` endpoint basically, you specify that type of content you extract from the result and apply policy on. This is particularly used in post hook, since the result could be a union of
+`Union[TextContent, JSONContent, ImageContent, ResourceContent]`.
 
 ## Example with multiple hooks
 Similar to above example, the policies could also be applied to other hooks like prompts, tools and resources for both pre and post hook invocation. In the provided example below:
@@ -106,28 +106,28 @@ plugins:
         - tool_name: "fast-time-git-status"
           extensions:
             policy: "example"
-            policy_endpoints: 
+            policy_endpoints:
               - "allow_tool_pre_invoke"
               - "allow_tool_post_invoke"
-            policy_modality: 
+            policy_modality:
               - "text"
       prompts:
         - prompt_name: "test_prompt"
           extensions:
             policy: "example"
-            policy_endpoints: 
+            policy_endpoints:
               - "allow_prompt_pre_fetch"
               - "allow_prompt_post_fetch"
-            policy_modality: 
+            policy_modality:
               - "text"
       resources:
         - resource_uri: "https://example.com"
           extensions:
             policy: "example"
-            policy_endpoints: 
+            policy_endpoints:
               - "allow_resource_pre_fetch"
               - "allow_resource_post_fetch"
-            policy_modality: 
+            policy_modality:
               - "text"
 
     conditions:
@@ -239,7 +239,7 @@ The test file `test_opapluginfilter.py` validates OPA plugin behavior at six dif
 4. **Backward Compatibility** - One test (test_opapluginfilter_backward_compatibility) confirms the plugin supports legacy policy endpoint naming conventions using the generic allow endpoint instead of hook-specific endpoints.
 
 To run the test cases, run the following command:
-1. As a first step, first install OPA in your development machine. 
+1. As a first step, first install OPA in your development machine.
 
 ```bash
 # For Apple Silicon (M1/M2/M3)
@@ -251,7 +251,7 @@ curl -L -o opa https://openpolicyagent.org/downloads/latest/opa_darwin_amd64
 # Make executable
 chmod 755 ./opa
 
-# Verify installation 
+# Verify installation
 opa --version
 ```
 

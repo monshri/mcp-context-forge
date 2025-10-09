@@ -21,7 +21,7 @@ default allow_resource_post_fetch := false
 barred_pattern := `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z0-9-.]+`
 
 contains_word(pattern) if {
-	some key
+    some key
     value := input.payload.args[key]
     contains(value,pattern)
 }
@@ -30,7 +30,7 @@ parse_url_regex(url) := components if {
     # Regex pattern: (protocol)://(domain)(port)?(path)?
     pattern := `(https?)://([^:^/]*)(:\d*)?(.*)?`
     matches := regex.find_all_string_submatch_n(pattern, url, 1)
-    
+
     match := matches[0]
     components := {
         "protocol": match[1],
@@ -77,6 +77,6 @@ allow_resource_post_fetch if {
 }
 
 allow_resource_pre_fetch if {
-	components := parse_url_regex(input.payload.uri)
-	not contains(components.path, "root")
+    components := parse_url_regex(input.payload.uri)
+    not contains(components.path, "root")
 }

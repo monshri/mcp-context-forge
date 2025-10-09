@@ -65,7 +65,7 @@ async def test_pre_tool_invoke_opapluginfilter():
     context = PluginContext(global_context=GlobalContext(request_id="1", server_id="2"))
     result = await plugin.tool_pre_invoke(payload, context)
     assert result.continue_processing
-    
+
     # Malign payload (denied by OPA (rego) policy)
     payload = ToolPreInvokePayload(name="fast-time-git-status", args={"repo_path": "/path/ibm"})
     context = PluginContext(global_context=GlobalContext(request_id="1", server_id="2"))
@@ -98,7 +98,7 @@ async def test_post_tool_invoke_opapluginfilter():
     context = PluginContext(global_context=GlobalContext(request_id="1", server_id="2"))
     result = await plugin.tool_post_invoke(payload, context)
     assert result.continue_processing
-    
+
     # Malign payload (denied by OPA (rego) policy)
     payload = ToolPostInvokePayload(name="fast-time-git-status", result={"text": "IBM@example.com"})
     context = PluginContext(global_context=GlobalContext(request_id="1", server_id="2"))
@@ -140,7 +140,7 @@ async def test_pre_prompt_fetch_opapluginfilter():
     result = await plugin.prompt_pre_fetch(payload, context)
     assert not result.continue_processing
 
-    
+
 
 @pytest.mark.asyncio
 # Test for when opaplugin is not applied to prompts
@@ -212,7 +212,7 @@ async def test_pre_resource_fetch_opapluginfilter():
     result = await plugin.resource_pre_fetch(payload, context)
     assert not result.continue_processing
 
-    
+
 
 @pytest.mark.asyncio
 # Test for when opaplugin is not applied to resources
@@ -250,9 +250,9 @@ async def test_post_resource_fetch_opapluginfilter():
     content = ResourceContent(
             type="resource",
             uri="test://large",
-            text="test://abc@example.com", 
+            text="test://abc@example.com",
         )
-    payload = ResourcePostFetchPayload(uri="https://example.com", content=content)    
+    payload = ResourcePostFetchPayload(uri="https://example.com", content=content)
     context = PluginContext(global_context=GlobalContext(request_id="1", server_id="2"))
     result = await plugin.resource_post_fetch(payload, context)
     assert not result.continue_processing
@@ -283,10 +283,10 @@ async def test_opapluginfilter_backward_compatibility():
     context = PluginContext(global_context=GlobalContext(request_id="1", server_id="2"))
     result = await plugin.tool_pre_invoke(payload, context)
     assert result.continue_processing
-    
+
     # Malign payload (denied by OPA (rego) policy)
     payload = ToolPreInvokePayload(name="fast-time-git-status", args={"repo_path": "/path/ibm"})
     context = PluginContext(global_context=GlobalContext(request_id="1", server_id="2"))
     result = await plugin.tool_pre_invoke(payload, context)
     assert not result.continue_processing
-  
+
