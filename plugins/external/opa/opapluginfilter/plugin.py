@@ -344,12 +344,11 @@ class OPAPluginFilter(Plugin):
         if not payload.args:
             return ToolPreInvokeResult()
 
-        headers = payload.headers if hasattr(payload,"headers") and not payload.headers else {}
         policy_apply_config = self._config.applied_to
         if policy_apply_config and policy_apply_config.tools:
             opa_pre_tool_input = self._preprocess_opa(policy_apply_config,payload,context,hook_type)
             if opa_pre_tool_input:
-                opa_input = BaseOPAInputKeys(kind=hook_type, user="none", payload=payload.model_dump(), context=opa_pre_tool_input["policy_context"], request_ip="none", headers=headers, mode="input")
+                opa_input = BaseOPAInputKeys(kind=hook_type, user="none", payload=payload.model_dump(), context=opa_pre_tool_input["policy_context"], request_ip="none", headers={}, mode="input")
                 decision, decision_context = self._evaluate_opa_policy(url=opa_pre_tool_input["opa_server_url"], input=OPAInput(input=opa_input), policy_input_data_map=opa_pre_tool_input["policy_input_data_map"])
                 if not decision:
                         violation = PluginViolation(

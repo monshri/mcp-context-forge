@@ -37,59 +37,7 @@ from mcpgateway.models import Message, Role, TextContent
 from mcpgateway.services.logging_service import LoggingService
 logging_service = LoggingService()
 logger = logging_service.get_logger(__name__)
-# Configuration
-OPA_HOST = "localhost"
-OPA_PORT = 8181
-OPA_URL = f"http://{OPA_HOST}:{OPA_PORT}"
-POLICY_PATH = "/Users/shritipriya/Documents/sept@271-opa/mcp-context-forge/plugins/external/opa/opaserver/rego/example.rego"
 
-
-@pytest.fixture(scope="session")
-def opa_server():
-    """Start OPA server with policy loaded."""
-    # Start OPA server process
-    import pdb
-    pdb.set_trace()
-    proc = subprocess.Popen(
-        [
-            "opa", "run", 
-            "--server", 
-            "--addr", f"{OPA_HOST}:{OPA_PORT}",
-            "--log-level", "error",
-            POLICY_PATH
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    
-    # Wait for server to be ready
-    max_retries = 10
-    for i in range(max_retries):
-        try:
-            response = requests.get(f"{OPA_URL}/health", timeout=1)
-            if response.status_code == 200:
-                logger.info(f"OPA server started successfully on {OPA_URL}")
-                break
-        except requests.ConnectionError:
-            if i == max_retries - 1:
-                proc.terminate()
-                stdout, stderr = proc.communicate(timeout=5)
-                raise AssertionError(
-                    f"OPA server failed to start.\nStdout: {stdout}\nStderr: {stderr}"
-                )
-            time.sleep(0.5)
-    
-    yield proc
-    
-    # Cleanup: terminate OPA server
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-    logger.info("OPA server stopped")
 
 @pytest.mark.asyncio
 # Test for when opaplugin is not applied to tools
