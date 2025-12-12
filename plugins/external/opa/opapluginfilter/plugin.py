@@ -222,7 +222,7 @@ class OPAPluginFilter(Plugin):
                     hook_name = hook.resource_uri
                     payload_name = payload.uri
                 else:
-                    logger.error(f"{OPAPluginErrorCodes.UNSUPPORTED_HOOK_TYPE.value: {hook}}")
+                    logger.error(f"{OPAPluginErrorCodes.UNSUPPORTED_HOOK_TYPE.value}: {hook}")
                     raise PluginError(PluginErrorModel(message=OPAPluginErrorCodes.UNSUPPORTED_HOOK_TYPE.value, plugin_name="OPAPluginFilter"))
 
                 if payload_name == hook_name or hook_name in payload_name:
