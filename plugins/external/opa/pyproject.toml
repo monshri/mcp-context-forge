@@ -46,6 +46,7 @@ authors = [
 dependencies = [
     "mcp>=1.16.0",
     "mcp-contextforge-gateway",
+    "opa-python-client"
 ]
 
 # URLs
@@ -78,6 +79,7 @@ dev = [
     "ruff>=0.12.9",
     "unimport>=1.2.1",
     "uv>=0.8.11",
+    "opa-python-client"
 ]
 
 # --------------------------------------------------------------------
