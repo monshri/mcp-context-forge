@@ -17,6 +17,8 @@ from urllib.parse import urlparse
 import requests
 import httpx
 import asyncio
+import re
+import logging
 
 # First-Party
 from mcpgateway.plugins.framework import (
@@ -43,12 +45,10 @@ from mcpgateway.plugins.framework import (
     ToolHookType,
 )
 from mcpgateway.plugins.framework.models import AppliedTo
-from mcpgateway.services.logging_service import LoggingService
 from opapluginfilter.schema import BaseOPAInputKeys, OPAConfig, OPAInput
 
 # Initialize logging service first
-logging_service = LoggingService()
-logger = logging_service.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class OPAPluginCodes(str, Enum):
@@ -121,10 +121,11 @@ class OPAPluginFilter(Plugin):
         return current_data
     
     async def post_with_retry(self, client, url, payload, max_retries=3):
-        timeout = httpx.Timeout(30.0)  # 30s total timeout
+        match = re.match(r'(\d+)s', self.opa_config.opa_client_timeout.strip())
+        seconds = float(match.group(1)) if match else None
         for attempt in range(max_retries):
             try:
-                response = await client.post(url, json=payload, timeout=timeout)
+                response = await client.post(url, json=payload, timeout=seconds)
                 response.raise_for_status()
                 return response
             except (httpx.TimeoutException, httpx.RequestError) as e:
@@ -164,7 +165,7 @@ class OPAPluginFilter(Plugin):
         logger.info(f"OPA url {url}, OPA payload {payload}")
         try:
             async with httpx.AsyncClient() as client:
-                rsp = await self.post_with_retry(client=client, url=url, payload=payload, max_retries=3)
+                rsp = await self.post_with_retry(client=client, url=url, payload=payload, max_retries=self.opa_config.opa_client_retries)
                 logger.info(f"OPA connection response '{rsp}'")
                 if rsp.status_code == 200:
                     json_response = rsp.json()
