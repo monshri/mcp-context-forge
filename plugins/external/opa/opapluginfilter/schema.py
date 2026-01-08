@@ -68,3 +68,5 @@ class OPAConfig(BaseModel):
 
     # Base url on which opa server is running
     opa_base_url: str = "None"
+    opa_client_retries: int = 3
+    opa_client_timeout: str = "30s"
