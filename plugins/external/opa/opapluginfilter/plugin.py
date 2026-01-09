@@ -102,17 +102,18 @@ class OPAPluginFilter(Plugin):
         self._opa_client_max_conn = self.opa_config.opa_client_max_connections
         self._opa_client_max_ka = self.opa_config.opa_client_max_keepalive
         self._opa_client_max_retries = self.opa_config.opa_client_retries
+        self._timeout_pattern = re.compile(r"(\d+)s")
 
         if self.opa_config.opa_client_timeout:
-            match = re.match(r"(\d+)s", self.opa_config.opa_client_timeout.strip())
+            match = self._timeout_pattern.match(self.opa_config.opa_client_timeout.strip())
             if match:
                 self._opa_client_timeout_seconds = float(match.group(1))
         if self.opa_config.opa_client_keepalive_expiry:
-            match = re.match(r"(\d+)s", self.opa_config.opa_client_keepalive_expiry.strip())
+            match = self._timeout_pattern.match(self.opa_config.opa_client_keepalive_expiry.strip())
             if match:
                 self._opa_client_ka_exp = float(match.group(1))
         self.__initialize_opa_client()
-        logger.info(f"OPAPluginFilter initialised with configuraiton {self.opa_config}")
+        logger.info(f"OPAPluginFilter initialised with configuration {self.opa_config}")
 
     def __initialize_opa_client(self) -> None:
         """Initialize opa client to connect to OPA server for policy evaluations"""
