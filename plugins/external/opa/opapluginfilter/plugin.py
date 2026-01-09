@@ -9,16 +9,16 @@ This module loads configurations for plugins and applies hooks on pre/post reque
 """
 
 # Standard
+import asyncio
+import re
+import logging
+
 from enum import Enum
 from typing import Any, TypeAlias
 from urllib.parse import urlparse
 
 # Third-Party
-import requests
 import httpx
-import asyncio
-import re
-import logging
 
 # First-Party
 from mcpgateway.plugins.framework import (
@@ -119,19 +119,36 @@ class OPAPluginFilter(Plugin):
             else:
                 return default  # Key not found at this level
         return current_data
-    
-    async def post_with_retry(self, client, url, payload, max_retries=3):
-        match = re.match(r'(\d+)s', self.opa_config.opa_client_timeout.strip())
+
+    async def _post_with_retry(self, client: httpx.AsyncClient, url: str, payload: dict, max_retries: int = 3) -> httpx.Response:
+        """Function to asynchronously communicate with OPA Server for policy evaluation and enforcement
+
+        Args:
+            client: The asynchornous client object to communicate with OPA server
+            url: The url to call opa server
+            payload: The actual payload dictionary to sent to the server
+            max_retries: Maxinum number of retries in case the communication fails with the server
+
+        Returns:
+            response: Returns a response that's recieved from the OPA server. Raises error in cases the communication is not successful.
+
+        """
+        match = re.match(r"(\d+)s", self.opa_config.opa_client_timeout.strip())
         seconds = float(match.group(1)) if match else None
         for attempt in range(max_retries):
             try:
                 response = await client.post(url, json=payload, timeout=seconds)
                 response.raise_for_status()
+                logger.info(f"OPA POST succeeded on attempt {attempt + 1}")
                 return response
-            except (httpx.TimeoutException, httpx.RequestError) as e:
+            except (httpx.TimeoutException, httpx.RequestError, httpx.ConnectError):
+                logger.warning(f"Retry attempt to connect to OPA server {attempt + 1}")
                 if attempt == max_retries - 1:
                     raise
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
+            except httpx.HTTPStatusError as e:
+                logger.error(f"OPA POST HTTP error (attempt {attempt + 1}, status {e.response.status_code}): {e.response.text[:200]}")
+                raise
 
     async def _evaluate_opa_policy(self, url: str, input: OPAInput, policy_input_data_map: dict) -> tuple[bool, Any]:
         """Function to evaluate OPA policy. Makes a request to opa server with url and input.
@@ -163,9 +180,10 @@ class OPAPluginFilter(Plugin):
 
         payload = {"input": {m: self._get_nested_value(input.model_dump()["input"], _key(k, m)) for k, m in policy_input_data_map.items()}} if policy_input_data_map else input.model_dump()
         logger.info(f"OPA url {url}, OPA payload {payload}")
+        rsp = None
         try:
             async with httpx.AsyncClient() as client:
-                rsp = await self.post_with_retry(client=client, url=url, payload=payload, max_retries=self.opa_config.opa_client_retries)
+                rsp = await self._post_with_retry(client=client, url=url, payload=payload, max_retries=self.opa_config.opa_client_retries)
                 logger.info(f"OPA connection response '{rsp}'")
                 if rsp.status_code == 200:
                     json_response = rsp.json()
@@ -177,17 +195,16 @@ class OPAPluginFilter(Plugin):
                     elif isinstance(decision, dict) and "allow" in decision:
                         allow = decision["allow"]
                         logger.debug(f"OPA decision {allow}")
-                        return allow, json_response     
+                        return allow, json_response
                     else:
                         logger.error(f"{OPAPluginErrorCodes.OPA_SERVER_NONE_RESPONSE.value} : {json_response}")
                         raise PluginError(PluginErrorModel(message=OPAPluginErrorCodes.OPA_SERVER_NONE_RESPONSE.value, plugin_name="OPAPluginFilter", details={"reason": json_response}))
-                else:
-                    logger.error(f"{OPAPluginErrorCodes.OPA_SERVER_ERROR.value}: {rsp}")
-                    raise PluginError(PluginErrorModel(message=OPAPluginErrorCodes.OPA_SERVER_ERROR.value, plugin_name="OPAPluginFilter", details={"reason": rsp}))
+        except PluginError:
+            raise  # Re-raise PluginError as-is
         except Exception as e:
             logger.error(f"{OPAPluginErrorCodes.OPA_SERVER_ERROR.value}")
             raise PluginError(PluginErrorModel(message=OPAPluginErrorCodes.OPA_SERVER_ERROR.value, plugin_name="OPAPluginFilter", details={"reason": str(e)}))
-        
+
     def _preprocess_opa(self, policy_apply_config: AppliedTo = None, payload: HookPayload = None, context: PluginContext = None, hook_type: str = None) -> dict:
         """Function to preprocess input for OPA server based on the type of hook it's invoked on.
 
