@@ -10,8 +10,9 @@ This module loads configurations for plugins and applies hooks on pre/post reque
 
 # Standard
 import asyncio
-import re
 import logging
+import random
+import re
 
 from enum import Enum
 from typing import Any, TypeAlias
@@ -95,8 +96,33 @@ class OPAPluginFilter(Plugin):
         """
         super().__init__(config)
         self.opa_config = OPAConfig.model_validate(self._config.config)
-        self.opa_context_key = "opa_policy_context"
+        self._opa_context_key = "opa_policy_context"
+        self._opa_client_timeout_seconds = 30.0
+        self._opa_client_ka_exp = 5.0
+        self._opa_client_max_conn = self.opa_config.opa_client_max_connections
+        self._opa_client_max_ka = self.opa_config.opa_client_max_keepalive
+        self._opa_client_max_retries = self.opa_config.opa_client_retries
+
+        if self.opa_config.opa_client_timeout:
+            match = re.match(r"(\d+)s", self.opa_config.opa_client_timeout.strip())
+            if match:
+                self._opa_client_timeout_seconds = float(match.group(1))
+        if self.opa_config.opa_client_keepalive_expiry:
+            match = re.match(r"(\d+)s", self.opa_config.opa_client_keepalive_expiry.strip())
+            if match:
+                self._opa_client_ka_exp = float(match.group(1))
+        self.__initialize_opa_client()
         logger.info(f"OPAPluginFilter initialised with configuraiton {self.opa_config}")
+
+    def __initialize_opa_client(self) -> None:
+        """Initialize opa client to connect to OPA server for policy evaluations"""
+        self._opa_http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(self._opa_client_timeout_seconds), limits=httpx.Limits(max_keepalive_connections=self._opa_client_max_ka, max_connections=self._opa_client_max_conn), http2=True
+        )
+
+    async def cleanup(self) -> None:
+        """Cleans up opa client when plugin shuts down"""
+        await self._opa_http_client.aclose()
 
     def _get_nested_value(self, data, key_string, default=None):
         """
@@ -120,32 +146,29 @@ class OPAPluginFilter(Plugin):
                 return default  # Key not found at this level
         return current_data
 
-    async def _post_with_retry(self, client: httpx.AsyncClient, url: str, payload: dict, max_retries: int = 3) -> httpx.Response:
+    async def _post_with_retry(self, url: str, payload: dict) -> httpx.Response:
         """Function to asynchronously communicate with OPA Server for policy evaluation and enforcement
 
         Args:
-            client: The asynchornous client object to communicate with OPA server
             url: The url to call opa server
             payload: The actual payload dictionary to sent to the server
-            max_retries: Maxinum number of retries in case the communication fails with the server
 
         Returns:
             response: Returns a response that's recieved from the OPA server. Raises error in cases the communication is not successful.
 
         """
-        match = re.match(r"(\d+)s", self.opa_config.opa_client_timeout.strip())
-        seconds = float(match.group(1)) if match else None
-        for attempt in range(max_retries):
+        for attempt in range(self._opa_client_max_retries):
             try:
-                response = await client.post(url, json=payload, timeout=seconds)
+                response = await self._opa_http_client.post(url, json=payload, timeout=self._opa_client_timeout_seconds)
                 response.raise_for_status()
                 logger.info(f"OPA POST succeeded on attempt {attempt + 1}")
                 return response
             except (httpx.TimeoutException, httpx.RequestError, httpx.ConnectError):
                 logger.warning(f"Retry attempt to connect to OPA server {attempt + 1}")
-                if attempt == max_retries - 1:
+                if attempt == self._opa_client_max_retries - 1:
                     raise
-                await asyncio.sleep(2**attempt)
+                delay = min(2**attempt, 10) + random.uniform(0, 1)
+                await asyncio.sleep(delay)
             except httpx.HTTPStatusError as e:
                 logger.error(f"OPA POST HTTP error (attempt {attempt + 1}, status {e.response.status_code}): {e.response.text[:200]}")
                 raise
@@ -182,23 +205,22 @@ class OPAPluginFilter(Plugin):
         logger.info(f"OPA url {url}, OPA payload {payload}")
         rsp = None
         try:
-            async with httpx.AsyncClient() as client:
-                rsp = await self._post_with_retry(client=client, url=url, payload=payload, max_retries=self.opa_config.opa_client_retries)
-                logger.info(f"OPA connection response '{rsp}'")
-                if rsp.status_code == 200:
-                    json_response = rsp.json()
-                    decision = json_response.get("result", None)
-                    logger.info(f"OPA server response '{json_response}'")
-                    if isinstance(decision, bool):
-                        logger.debug(f"OPA decision {decision}")
-                        return decision, json_response
-                    elif isinstance(decision, dict) and "allow" in decision:
-                        allow = decision["allow"]
-                        logger.debug(f"OPA decision {allow}")
-                        return allow, json_response
-                    else:
-                        logger.error(f"{OPAPluginErrorCodes.OPA_SERVER_NONE_RESPONSE.value} : {json_response}")
-                        raise PluginError(PluginErrorModel(message=OPAPluginErrorCodes.OPA_SERVER_NONE_RESPONSE.value, plugin_name="OPAPluginFilter", details={"reason": json_response}))
+            rsp = await self._post_with_retry(url=url, payload=payload)
+            logger.info(f"OPA connection response '{rsp}'")
+            if rsp.status_code == 200:
+                json_response = rsp.json()
+                decision = json_response.get("result", None)
+                logger.info(f"OPA server response '{json_response}'")
+                if isinstance(decision, bool):
+                    logger.debug(f"OPA decision {decision}")
+                    return decision, json_response
+                elif isinstance(decision, dict) and "allow" in decision:
+                    allow = decision["allow"]
+                    logger.debug(f"OPA decision {allow}")
+                    return allow, json_response
+                else:
+                    logger.error(f"{OPAPluginErrorCodes.OPA_SERVER_NONE_RESPONSE.value} : {json_response}")
+                    raise PluginError(PluginErrorModel(message=OPAPluginErrorCodes.OPA_SERVER_NONE_RESPONSE.value, plugin_name="OPAPluginFilter", details={"reason": json_response}))
         except PluginError:
             raise  # Re-raise PluginError as-is
         except Exception as e:
@@ -261,8 +283,8 @@ class OPAPluginFilter(Plugin):
                     policy_apply = True
                     if hook.context:
                         input_context = [ctx.rsplit(".", 1)[-1] for ctx in hook.context]
-                    if self.opa_context_key in context.global_context.state:
-                        policy_context = {k: context.global_context.state[self.opa_context_key][k] for k in input_context}
+                    if self._opa_context_key in context.global_context.state:
+                        policy_context = {k: context.global_context.state[self._opa_context_key][k] for k in input_context}
                     if hook.extensions:
                         policy = hook.extensions.get("policy", None)
                         if not policy:
