@@ -64,9 +64,20 @@ class OPAInput(BaseModel):
 
 
 class OPAConfig(BaseModel):
-    """Configuration for the OPA plugin."""
+    """Configuration for the OPA plugin.
 
-    # Base url on which opa server is running
-    opa_base_url: str = "None"
+    Attributes:
+        opa_base_url: The url of opa server
+        opa_client_retries: Maximum no of retry attempt made while connecting to opa server
+        opa_client_timeout: Timeout seconds for client connection to opa server
+        opa_client_max_keepalive: Maximum number of connections to keep alive
+        opa_client_max_connections: Maximum number of client connections
+        opa_client_keepalive_expiry: Time for idle keep alive connections
+    """
+
+    opa_base_url: str = "http://127.0.0.1:8181/v1/data/"
     opa_client_retries: int = 3
     opa_client_timeout: str = "30s"
+    opa_client_max_keepalive: int = 20
+    opa_client_max_connections: int = 100
+    opa_client_keepalive_expiry: str = "5s"
