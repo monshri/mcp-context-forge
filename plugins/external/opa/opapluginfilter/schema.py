@@ -12,7 +12,7 @@ This module defines schema for OPA plugin.
 from typing import Any, Optional
 
 # Third-Party
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class BaseOPAInputKeys(BaseModel):
@@ -76,8 +76,8 @@ class OPAConfig(BaseModel):
     """
 
     opa_base_url: str = "http://127.0.0.1:8181/v1/data/"
-    opa_client_retries: int = 3
+    opa_client_retries: int = Field(default=3, ge=1, description="Maximum retry attempts (must be >= 1)")
     opa_client_timeout: str = "30s"
-    opa_client_max_keepalive: int = 20
-    opa_client_max_connections: int = 100
+    opa_client_max_keepalive: int = Field(default=20, ge=1, description="Maximum keepalive connections")
+    opa_client_max_connections: int = Field(default=100, ge=1, description="Maximum total connections")
     opa_client_keepalive_expiry: str = "5s"

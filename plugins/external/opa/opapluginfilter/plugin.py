@@ -118,7 +118,9 @@ class OPAPluginFilter(Plugin):
     def __initialize_opa_client(self) -> None:
         """Initialize opa client to connect to OPA server for policy evaluations"""
         self._opa_http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(self._opa_client_timeout_seconds), limits=httpx.Limits(max_keepalive_connections=self._opa_client_max_ka, max_connections=self._opa_client_max_conn), http2=True
+            timeout=httpx.Timeout(self._opa_client_timeout_seconds),
+            limits=httpx.Limits(max_keepalive_connections=self._opa_client_max_ka, max_connections=self._opa_client_max_conn, keepalive_expiry=self._opa_client_ka_exp),
+            http2=True,
         )
 
     async def shutdown(self) -> None:
