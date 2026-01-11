@@ -121,8 +121,8 @@ class OPAPluginFilter(Plugin):
             timeout=httpx.Timeout(self._opa_client_timeout_seconds), limits=httpx.Limits(max_keepalive_connections=self._opa_client_max_ka, max_connections=self._opa_client_max_conn), http2=True
         )
 
-    async def cleanup(self) -> None:
-        """Cleans up opa client when plugin shuts down"""
+    async def shutdown(self) -> None:
+        """Shutdown and cleanup OPA HTTP client when plugin shuts down."""
         await self._opa_http_client.aclose()
 
     def _get_nested_value(self, data, key_string, default=None):
