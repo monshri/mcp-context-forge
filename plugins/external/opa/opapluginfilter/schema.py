@@ -76,7 +76,7 @@ class OPAConfig(BaseModel):
     """
 
     opa_base_url: str = "http://127.0.0.1:8181/v1/data/"
-    opa_client_retries: int = Field(default=3, ge=1, description="Maximum retry attempts (must be >= 1)")
+    opa_client_retries: int = Field(default=3, ge=1, description="Maximum attempts (1=single attempt, no retries; 3=up to 3 attempts)")
     opa_client_timeout: str = "30s"
     opa_client_max_keepalive: int = Field(default=20, ge=1, description="Maximum keepalive connections")
     opa_client_max_connections: int = Field(default=100, ge=1, description="Maximum total connections")
