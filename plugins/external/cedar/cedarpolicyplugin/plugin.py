@@ -13,10 +13,12 @@ from enum import Enum
 import re
 from typing import Any
 from urllib.parse import urlparse
+import asyncio
 
 # Third-Party
 from cedarpolicyplugin.schema import CedarConfig, CedarInput
 from cedarpy import AuthzResult, Decision, is_authorized
+from cedarpy import CedarPolicy, CedarAuthorizer, PolicyParseError
 
 # First-Party
 from mcpgateway.plugins.framework import (
@@ -77,6 +79,7 @@ class CedarErrorCodes(str, Enum):
     UNSPECIFIED_OUTPUT_ACTION = "Unspecified output action in policy configuration"
     UNSPECIFIED_SERVER = "Unspecified server for tool request"
     UNSUPPORTED_CONTENT_TYPE = "Unsupported content type"
+    INVALID_CEDAR_CONFIG = "Invalid cedar configuration"
 
 
 class CedarPolicyPlugin(Plugin):
@@ -93,7 +96,29 @@ class CedarPolicyPlugin(Plugin):
         self.cedar_config = CedarConfig.model_validate(self._config.config)
         self.cedar_context_key = "cedar_policy_context"
         self.jwt_info = {}
+        self._cedar_policy = None
+        self._cedar_policy_template = '''
+        permit (
+            principal == {principal_str},
+            action in [{actions_str}],
+            resource == {resource_str}
+        );
+        '''
+        if self.cedar_config.policy_lang == "cedar":
+            if self.cedar_config.policy:
+                self._cedar_policy = self._yamlpolicy2text(self.cedar_config.policy)
+            else:
+                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
+                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
+        if self.cedar_config.policy_lang == "custom_dsl":
+            if self.cedar_config.policy:
+                self._cedar_policy = self._dsl2cedar(self.cedar_config.policy)
+            else:
+                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
+                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
         logger.info(f"CedarPolicyPlugin initialised with configuration {self.cedar_config}")
+        
+
 
     def _set_jwt_info(self, user_role_mapping: dict) -> None:
         """Sets user role mapping information from jwt tokens
@@ -112,6 +137,20 @@ class CedarPolicyPlugin(Plugin):
             key: The key for which value needs to be extracted for.
             result: A list of all the values for a key.
         """
+        
+        if not isinstance(content, (dict, list)):
+            return
+        stack = [content]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, dict):
+                if key in item:
+                    result.setdefault(key, []).append(item[key])
+                stack.extend(item.values())
+            elif isinstance(item, list):
+                stack.extend(item)
+
+
         if isinstance(content, list):
             for element in content:
                 if isinstance(element, dict) and key in element:
@@ -127,7 +166,7 @@ class CedarPolicyPlugin(Plugin):
             logger.error(f"{CedarErrorCodes.UNSUPPORTED_CONTENT_TYPE.value}: {type(content)}")
             raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSUPPORTED_CONTENT_TYPE.value, plugin_name="CedarPolicyPlugin"))
 
-    def _evaluate_policy(self, request: dict, policy_expr: str) -> str:
+    async def _evaluate_policy(self, request: dict, policy_expr: str) -> str:
         """Function that evaluates and enforce cedar policy using is_authorized function in cedarpy library
         Args:
             request(dict): The request dict consisting of principal, action, resource or context keys.
@@ -136,9 +175,31 @@ class CedarPolicyPlugin(Plugin):
         Returns:
             decision(str): "Allow" or "Deny"
         """
-        result: AuthzResult = is_authorized(request, policy_expr, [])
-        decision = "Allow" if result.decision == Decision.Allow else "Deny"
-        return decision
+        result: AuthzResult = await asyncio.to_thread(is_authorized, request, policy_expr, [])
+        return "Allow" if result.decision == Decision.Allow else "Deny"
+
+    def validate_policy(policy_text: str, schema_json: str = None) -> bool:
+        """
+        Validates a Cedar policy using cedarpy's parse_policy.
+        
+        Args:
+            policy_text: The Cedar policy string to validate.
+            schema_json: Optional schema JSON string for schema validation.
+        
+        Returns:
+            True if valid, False otherwise. Raises CedarError on parse errors.
+        """
+        try:
+            # Parse validates syntax and semantics against schema if provided
+            parsed = parse_policy(policy_text, schema_json)
+            print("Policy parsed successfully.")
+            # Format to check/pretty-print
+            formatted = format_policies(policy_text)
+            print("Formatted policy:\n", formatted)
+            return True
+        except CedarError as e:
+            print(f"Validation failed: {e}")
+            return False
 
     def _yamlpolicy2text(self, policies: list) -> str:
         """Function to convert yaml representation of policies to text
@@ -152,15 +213,8 @@ class CedarPolicyPlugin(Plugin):
         for policy in policies:
             actions = policy["action"] if isinstance(policy["action"], list) else [policy["action"]]
             resources = policy["resource"] if isinstance(policy["resource"], list) else [policy["resource"]]
-
             for res in resources:
-                actions_str = ", ".join(actions)
-                cedar_policy_text += "permit(\n"
-                cedar_policy_text += f'  principal == {policy["principal"]},\n'
-                cedar_policy_text += f"  action in [{actions_str}],\n"
-                cedar_policy_text += f"  resource == {res}\n"
-                cedar_policy_text += ");\n\n"
-
+               cedar_policy_text = "\n\n".join(self._cedar_policy_template.format(principal_str=policy["principal"],actions_str=", ".join(actions),resource_str=res))
         return cedar_policy_text
 
     def _dsl2cedar(self, policy_string: str) -> str:
@@ -413,24 +467,9 @@ class CedarPolicyPlugin(Plugin):
 
         if not payload.args:
             return ToolPreInvokeResult()
-
-        policy = None
+        
         user = ""
         server_id = ""
-
-        if self.cedar_config.policy_lang == "cedar":
-            if self.cedar_config.policy:
-                policy = self._yamlpolicy2text(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
-        if self.cedar_config.policy_lang == "custom_dsl":
-            if self.cedar_config.policy:
-                policy = self._dsl2cedar(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
-
         if context.global_context.user:
             user = context.global_context.user
             server_id = context.global_context.server_id
@@ -441,8 +480,8 @@ class CedarPolicyPlugin(Plugin):
             logger.error(f"{CedarErrorCodes.UNSPECIFIED_SERVER.value}")
             raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_SERVER.value, plugin_name="CedarPolicyPlugin"))
 
-        if policy:
-            decision = self._evaluate_policy(request, policy)
+        if self._cedar_policy:
+            decision = await self._evaluate_policy(request, self._cedar_policy)
             if decision == Decision.Deny.value:
                 violation = PluginViolation(
                     reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
