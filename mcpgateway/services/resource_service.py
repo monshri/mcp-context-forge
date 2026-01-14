@@ -47,6 +47,7 @@ from mcpgateway.common.validators import SecurityValidator
 from mcpgateway.config import settings
 from mcpgateway.db import EmailTeam, fresh_db_session
 from mcpgateway.db import Gateway as DbGateway
+from mcpgateway.db import get_for_update
 from mcpgateway.db import Resource as DbResource
 from mcpgateway.db import ResourceMetric, ResourceMetricsHourly
 from mcpgateway.db import ResourceSubscription as DbSubscription
@@ -1277,7 +1278,7 @@ class ResourceService:
         ctx.load_verify_locations(cadata=ca_certificate)
         return ctx
 
-    async def invoke_resource(self, db: Session, resource_id: str, resource_uri: str, resource_template_uri: Optional[str] = None) -> Any:
+    async def invoke_resource(self, db: Session, resource_id: str, resource_uri: str, resource_template_uri: Optional[str] = None, user_identity: Optional[Union[str, Dict[str, Any]]] = None) -> Any:
         """
         Invoke a resource via its configured gateway using SSE or StreamableHTTP transport.
 
@@ -1302,6 +1303,11 @@ class ResourceService:
                 Direct resource URI configured for the resource.
             resource_template_uri (Optional[str]):
                 URI from the template. Overrides `resource_uri` when provided.
+            user_identity (Optional[Union[str, Dict[str, Any]]]):
+                Identity of the user making the request, used for session pool isolation.
+                Can be a string (email) or a dict with an 'email' key.
+                Defaults to "anonymous" for pool isolation if not provided.
+                OAuth token lookup always uses platform_admin_email (service account).
 
         Returns:
             Any: The text content returned by the remote resource, or ``None`` if the
@@ -1382,7 +1388,18 @@ class ResourceService:
         gateway_id = None
         resource_info = None
         resource_info = db.execute(select(DbResource).where(DbResource.id == resource_id)).scalar_one_or_none()
-        user_email = settings.platform_admin_email
+
+        # Normalize user_identity to string for session pool isolation
+        # Use authenticated user for pool isolation, but keep platform_admin for OAuth token lookup
+        if isinstance(user_identity, dict):
+            pool_user_identity = user_identity.get("email") or "anonymous"
+        elif isinstance(user_identity, str):
+            pool_user_identity = user_identity
+        else:
+            pool_user_identity = "anonymous"
+
+        # OAuth token lookup uses platform admin (service account) - not changed
+        oauth_user_email = settings.platform_admin_email
 
         if resource_info:
             gateway_id = getattr(resource_info, "gateway_id", None)
@@ -1493,7 +1510,7 @@ class ResourceService:
                                     #         span.set_attribute("error.message", "User email required for OAuth token")
                                     #     await self._handle_gateway_failure(gateway)
 
-                                    access_token: str = await token_storage.get_user_token(gateway.id, user_email)
+                                    access_token: str = await token_storage.get_user_token(gateway.id, oauth_user_email)
 
                                     if access_token:
                                         headers["Authorization"] = f"Bearer {access_token}"
@@ -1599,6 +1616,7 @@ class ResourceService:
                                         headers=authentication,
                                         transport_type=TransportType.SSE,
                                         httpx_client_factory=_get_httpx_client_factory,
+                                        user_identity=pool_user_identity,
                                     ) as pooled:
                                         resource_response = await pooled.session.read_resource(uri=uri)
                                         return getattr(getattr(resource_response, "contents")[0], "text")
@@ -1671,6 +1689,7 @@ class ResourceService:
                                         headers=authentication,
                                         transport_type=TransportType.STREAMABLE_HTTP,
                                         httpx_client_factory=_get_httpx_client_factory,
+                                        user_identity=pool_user_identity,
                                     ) as pooled:
                                         resource_response = await pooled.session.read_resource(uri=uri)
                                         return getattr(getattr(resource_response, "contents")[0], "text")
@@ -2011,7 +2030,7 @@ class ResourceService:
                 # If content is already a Pydantic content model, return as-is
                 if isinstance(content, (ResourceContent, TextContent)):
                     resource_response = await self.invoke_resource(
-                        db=db, resource_id=getattr(content, "id"), resource_uri=getattr(content, "uri") or None, resource_template_uri=getattr(content, "text") or None
+                        db=db, resource_id=getattr(content, "id"), resource_uri=getattr(content, "uri") or None, resource_template_uri=getattr(content, "text") or None, user_identity=user
                     )
                     if resource_response:
                         setattr(content, "text", resource_response)
@@ -2020,12 +2039,12 @@ class ResourceService:
                 if hasattr(content, "text") or hasattr(content, "blob"):
                     if hasattr(content, "blob"):
                         resource_response = await self.invoke_resource(
-                            db=db, resource_id=getattr(content, "id"), resource_uri=getattr(content, "uri") or None, resource_template_uri=getattr(content, "blob") or None
+                            db=db, resource_id=getattr(content, "id"), resource_uri=getattr(content, "uri") or None, resource_template_uri=getattr(content, "blob") or None, user_identity=user
                         )
                         setattr(content, "blob", resource_response)
                     elif hasattr(content, "text"):
                         resource_response = await self.invoke_resource(
-                            db=db, resource_id=getattr(content, "id"), resource_uri=getattr(content, "uri") or None, resource_template_uri=getattr(content, "text") or None
+                            db=db, resource_id=getattr(content, "id"), resource_uri=getattr(content, "uri") or None, resource_template_uri=getattr(content, "text") or None, user_identity=user
                         )
                         setattr(content, "text", resource_response)
                     return content
@@ -2109,7 +2128,7 @@ class ResourceService:
             'resource_read'
         """
         try:
-            resource = db.get(DbResource, resource_id)
+            resource = get_for_update(db, DbResource, resource_id)
             if not resource:
                 raise ResourceNotFoundError(f"Resource not found: {resource_id}")
 
@@ -2230,17 +2249,14 @@ class ResourceService:
             >>> asyncio.run(service.subscribe_resource(db, subscription))
         """
         try:
-            # Verify resource exists
-            resource = db.execute(select(DbResource).where(DbResource.uri == subscription.uri).where(DbResource.enabled)).scalar_one_or_none()
+            # Verify resource exists (single query to avoid TOCTOU between active/inactive checks)
+            resource = db.execute(select(DbResource).where(DbResource.uri == subscription.uri)).scalar_one_or_none()
 
             if not resource:
-                # Check if inactive resource exists
-                inactive_resource = db.execute(select(DbResource).where(DbResource.uri == subscription.uri).where(not_(DbResource.enabled))).scalar_one_or_none()
-
-                if inactive_resource:
-                    raise ResourceNotFoundError(f"Resource '{subscription.uri}' exists but is inactive")
-
                 raise ResourceNotFoundError(f"Resource not found: {subscription.uri}")
+
+            if not resource.enabled:
+                raise ResourceNotFoundError(f"Resource '{subscription.uri}' exists but is inactive")
 
             # Create subscription
             db_sub = DbSubscription(resource_id=resource.id, subscriber_id=subscription.subscriber_id)
@@ -2343,7 +2359,7 @@ class ResourceService:
         """
         try:
             logger.info(f"Updating resource: {resource_id}")
-            resource = db.get(DbResource, resource_id)
+            resource = get_for_update(db, DbResource, resource_id)
             if not resource:
                 raise ResourceNotFoundError(f"Resource not found: {resource_id}")
 
@@ -2353,12 +2369,14 @@ class ResourceService:
                 team_id = resource_update.team_id or resource.team_id
                 if visibility.lower() == "public":
                     # Check for existing public resources with the same uri
-                    existing_resource = db.execute(select(DbResource).where(DbResource.uri == resource_update.uri, DbResource.visibility == "public")).scalar_one_or_none()
+                    existing_resource = get_for_update(db, DbResource, where=and_(DbResource.uri == resource_update.uri, DbResource.visibility == "public", DbResource.id != resource_id))
                     if existing_resource:
                         raise ResourceURIConflictError(resource_update.uri, enabled=existing_resource.enabled, resource_id=existing_resource.id, visibility=existing_resource.visibility)
                 elif visibility.lower() == "team" and team_id:
                     # Check for existing team resource with the same uri
-                    existing_resource = db.execute(select(DbResource).where(DbResource.uri == resource_update.uri, DbResource.visibility == "team", DbResource.team_id == team_id)).scalar_one_or_none()
+                    existing_resource = get_for_update(
+                        db, DbResource, where=and_(DbResource.uri == resource_update.uri, DbResource.visibility == "team", DbResource.team_id == team_id, DbResource.id != resource_id)
+                    )
                     if existing_resource:
                         raise ResourceURIConflictError(resource_update.uri, enabled=existing_resource.enabled, resource_id=existing_resource.id, visibility=existing_resource.visibility)
 

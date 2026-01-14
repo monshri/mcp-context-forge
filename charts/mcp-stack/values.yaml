@@ -8,6 +8,26 @@ global:
   fullnameOverride: ""          # fully-qualified name override (optional)
 
 ########################################################################
+# SERVICE ACCOUNT
+# Configure ServiceAccount for all pods in the release.
+# Note: All pods (gateway, postgres, redis, minio, etc.) share the same
+# ServiceAccount. For fine-grained IAM control, deploy components in
+# separate releases or use Kustomize overlays.
+########################################################################
+serviceAccount:
+  # -- Create a ServiceAccount for all pods in this release
+  create: false
+  # -- ServiceAccount name. If empty and create=true, uses release fullname. If create=false, uses this name or "default"
+  name: ""
+  # -- Annotations for the ServiceAccount (e.g., AWS IRSA, GCP Workload Identity)
+  # @default -- `{}`
+  annotations: {}
+    # eks.amazonaws.com/role-arn: arn:aws:iam::123456789:role/my-role
+    # iam.gke.io/gcp-service-account: my-sa@project.iam.gserviceaccount.com
+  # -- Mount the ServiceAccount token in pods. Only applies when create=true (existing ServiceAccounts control their own token mounting)
+  automountServiceAccountToken: true
+
+########################################################################
 # MCP CONTEXT-FORGE (Gateway / API tier)
 ########################################################################
 mcpContextForge:
@@ -42,6 +62,7 @@ mcpContextForge:
   service:
     type: ClusterIP
     port: 80                    # external port → containerPort below
+    annotations: {}             # Service annotations (e.g., for AWS NLB configuration)
 
   containerPort: 4444           # port the app listens on inside the pod
 
@@ -711,6 +732,25 @@ mcpContextForge:
     - configMapRef:
         name: mcp-gateway-config
 
+  ## -- Additional environment variables from secrets or configmaps
+  ## Example:
+  ##   extraEnvFrom:
+  ##     - secretRef:
+  ##         name: my-secret
+  extraEnvFrom: []
+
+  ## -- Additional environment variables to inject directly
+  ## Example:
+  ##   extraEnv:
+  ##     - name: MY_VAR
+  ##       value: my-value
+  ##     - name: SECRET_VAR
+  ##       valueFrom:
+  ##         secretKeyRef:
+  ##           name: my-secret
+  ##           key: secret-key
+  extraEnv: []
+
 ########################################################################
 # DATABASE MIGRATION (Alembic)
 # Runs as a Job before mcpgateway deployment
@@ -793,6 +833,32 @@ postgres:
       memory: 64Mi
 
   # ─── Health & readiness probes ───
+
+  # ─── External Database Configuration ───
+  # If enabled, uses these connection details instead of the internal postgres pod.
+  # Can map keys from an existingSecret (e.g. created by CloudNativePG).
+  external:
+    enabled: false
+    # Secret name containing connection details
+    existingSecret: ""
+
+    # Connection details.
+    # If *Key is provided and existingSecret is set, the value is pulled from the secret.
+    # Otherwise, the direct value (host, port, etc.) is used.
+    host: ""
+    hostKey: "host"
+
+    port: 5432
+    portKey: "port"
+
+    database: ""
+    databaseKey: "dbname"
+
+    user: ""
+    userKey: "user"
+
+    password: ""
+    passwordKey: "password"
   probes:
     readiness:
       type: exec
