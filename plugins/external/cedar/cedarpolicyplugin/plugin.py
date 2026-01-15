@@ -147,7 +147,7 @@ class CedarPolicyPlugin(Plugin):
         """
         self.jwt_info["users"] = user_role_mapping
 
-    def _create_dsl_policy_template(current_role,resource_category,current_actions,resource_name):
+    def _create_dsl_policy_template(self,current_role,resource_category,current_actions,resource_name):
         return  {
                     "id": f"allow-{current_role}-{resource_category}",
                     "effect": "Permit",
@@ -301,56 +301,56 @@ class CedarPolicyPlugin(Plugin):
         elif self._output_redaction_pattern == "all":
             return self._output_redaction_string
         else:
-            return self._output_redaction_pattern.sub("[REDACTED]", payload)
+            return self._output_redaction_pattern.sub(self._output_redaction_string, payload)
         
 
-    # async def prompt_pre_fetch(self, payload: PromptPrehookPayload, context: PluginContext) -> PromptPrehookResult:
-    #     """The plugin hook run before a prompt is retrieved and rendered.
+    async def prompt_pre_fetch(self, payload: PromptPrehookPayload, context: PluginContext) -> PromptPrehookResult:
+        """The plugin hook run before a prompt is retrieved and rendered.
 
-    #     Args:
-    #         payload: The prompt payload to be analyzed.
-    #         context: contextual information about the hook call.
+        Args:
+            payload: The prompt payload to be analyzed.
+            context: contextual information about the hook call.
 
-    #     Returns:
-    #         The result of the plugin's analysis, including whether the prompt can proceed.
-    #     """
-    #     hook_type = "prompt_pre_fetch"
-    #     logger.info(f"Processing {hook_type} for '{payload.args}' with {len(payload.args) if payload.args else 0}")
-    #     logger.info(f"Processing context {context}")
+        Returns:
+            The result of the plugin's analysis, including whether the prompt can proceed.
+        """
+        hook_type = "prompt_pre_fetch"
+        logger.info(f"Processing {hook_type} for '{payload.args}' with {len(payload.args) if payload.args else 0}")
+        logger.info(f"Processing context {context}")
 
-    #     if not payload.args:
-    #         return PromptPrehookResult()
+        if not payload.args:
+            return PromptPrehookResult()
 
-    #     policy = None
-    #     user = ""
-    #     result_full = None
-    #     result_redacted = None
+        policy = None
+        user = ""
+        result_full = None
+        result_redacted = None
 
-    #     if context.global_context.user:
-    #         user = context.global_context.user
+        if context.global_context.user:
+            user = context.global_context.user
 
-    #     if self.cedar_config.policy_output_keywords:
-    #         view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
-    #         view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
-    #         if not view_full and not view_redacted:
-    #             logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
-    #             raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
-    #         if view_full and policy:
-    #             request = self._preprocess_request(user, view_full, payload.prompt_id, hook_type)
-    #             result_full = self._evaluate_policy(request, policy)
-    #         if view_redacted and policy:
-    #             request = self._preprocess_request(user, view_redacted, payload.prompt_id, hook_type)
-    #             result_redacted = self._evaluate_policy(request, policy)
+        if self.cedar_config.policy_output_keywords:
+            view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
+            view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
+            if not view_full and not view_redacted:
+                logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
+                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
+            if view_full and policy:
+                request = self._preprocess_request(user, view_full, payload.prompt_id, hook_type)
+                result_full = self._evaluate_policy(request, policy)
+            if view_redacted and policy:
+                request = self._preprocess_request(user, view_redacted, payload.prompt_id, hook_type)
+                result_redacted = self._evaluate_policy(request, policy)
 
-    #     if result_full == Decision.Deny.value and result_redacted == Decision.Deny.value:
-    #         violation = PluginViolation(
-    #             reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
-    #             description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
-    #             code=CedarCodes.DENIAL_CODE,
-    #             details={},
-    #         )
-    #         return PromptPrehookResult(modified_payload=payload, violation=violation, continue_processing=False)
-    #     return PromptPrehookResult(continue_processing=True)
+        if result_full == Decision.Deny.value and result_redacted == Decision.Deny.value:
+            violation = PluginViolation(
+                reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
+                description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
+                code=CedarCodes.DENIAL_CODE,
+                details={},
+            )
+            return PromptPrehookResult(modified_payload=payload, violation=violation, continue_processing=False)
+        return PromptPrehookResult(continue_processing=True)
 
     # async def prompt_post_fetch(self, payload: PromptPosthookPayload, context: PluginContext) -> PromptPosthookResult:
     #     """Plugin hook run after a prompt is rendered.
