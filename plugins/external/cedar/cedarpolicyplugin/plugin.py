@@ -9,18 +9,17 @@ This module loads configurations for plugins.
 """
 
 # Standard
+import asyncio
 from enum import Enum
 import re
 from typing import Any
 from urllib.parse import urlparse
-import asyncio
 
 # Third-Party
-from cedarpolicyplugin.schema import CedarConfig, CedarInput
-from cedarpy import AuthzResult, Decision, is_authorized
-from cedarpy import CedarPolicy, CedarAuthorizer, PolicyParseError
+from cedarpy import AuthzResult, Decision, is_authorized, is_authorized_batch
 
 # First-Party
+from cedarpolicyplugin.schema import CedarConfig, CedarInput
 from mcpgateway.plugins.framework import (
     Plugin,
     PluginConfig,
@@ -82,6 +81,16 @@ class CedarErrorCodes(str, Enum):
     INVALID_CEDAR_CONFIG = "Invalid cedar configuration"
 
 
+CEDAR_POLICY_TEMPLATE = '''
+permit(
+  principal == {principal_str},
+  action in [{actions_str}],
+  resource == {resource_str}
+);
+'''
+
+
+
 class CedarPolicyPlugin(Plugin):
     """A plugin that does policy decision and enforcement using cedar."""
 
@@ -95,15 +104,25 @@ class CedarPolicyPlugin(Plugin):
         super().__init__(config)
         self.cedar_config = CedarConfig.model_validate(self._config.config)
         self.cedar_context_key = "cedar_policy_context"
-        self.jwt_info = {}
-        self._cedar_policy = None
-        self._cedar_policy_template = '''
-        permit (
-            principal == {principal_str},
-            action in [{actions_str}],
-            resource == {resource_str}
-        );
-        '''
+        self.jwt_info: dict[str, dict[str, str]] = {}
+        self._cedar_policy: str | None = None
+        self._output_redaction_pattern: str | re.Pattern[str] | None = "all"
+        
+        # Regexes are compiled once
+        self._custom_dsl_pattern = re.compile(
+            r"\[role:([A-Za-z0-9_]+):(resource|prompt|server|agent)/([^\]]+)\]"
+        )
+        redaction_spec = self.cedar_config.policy_redaction_spec
+        
+        if redaction_spec:
+            self._output_redaction_string = redaction_spec.redaction_str
+            if not redaction_spec.pattern:
+                self._output_redaction_pattern = None
+            elif redaction_spec.pattern == "all":
+                self._output_redaction_pattern = "all"
+            else:
+                self._output_redaction_pattern = re.compile(redaction_spec.pattern)
+            
         if self.cedar_config.policy_lang == "cedar":
             if self.cedar_config.policy:
                 self._cedar_policy = self._yamlpolicy2text(self.cedar_config.policy)
@@ -128,6 +147,15 @@ class CedarPolicyPlugin(Plugin):
         """
         self.jwt_info["users"] = user_role_mapping
 
+    def _create_dsl_policy_template(current_role,resource_category,current_actions,resource_name):
+        return  {
+                    "id": f"allow-{current_role}-{resource_category}",
+                    "effect": "Permit",
+                    "principal": f'Role::"{current_role}"',
+                    "action": [f'Action::"{a}"' for a in current_actions],
+                    "resource": f'{resource_category}::"{resource_name}"',
+                }
+
     def _extract_payload_key(self, content: Any = None, key: str = None, result: dict[str, list] = None) -> None:
         """Function to extract values of passed in key in the payload recursively based on if the content is of type list, dict
         str or pydantic structure. The value is inplace updated in result.
@@ -137,20 +165,6 @@ class CedarPolicyPlugin(Plugin):
             key: The key for which value needs to be extracted for.
             result: A list of all the values for a key.
         """
-        
-        if not isinstance(content, (dict, list)):
-            return
-        stack = [content]
-        while stack:
-            item = stack.pop()
-            if isinstance(item, dict):
-                if key in item:
-                    result.setdefault(key, []).append(item[key])
-                stack.extend(item.values())
-            elif isinstance(item, list):
-                stack.extend(item)
-
-
         if isinstance(content, list):
             for element in content:
                 if isinstance(element, dict) and key in element:
@@ -178,28 +192,17 @@ class CedarPolicyPlugin(Plugin):
         result: AuthzResult = await asyncio.to_thread(is_authorized, request, policy_expr, [])
         return "Allow" if result.decision == Decision.Allow else "Deny"
 
-    def validate_policy(policy_text: str, schema_json: str = None) -> bool:
-        """
-        Validates a Cedar policy using cedarpy's parse_policy.
-        
+    async def _evaluate_policy_batch(self, batch_requests: dict, policy_expr: str) -> dict:
+        """Function that evaluates and enforce cedar policy using is_authorized function in cedarpy library
         Args:
-            policy_text: The Cedar policy string to validate.
-            schema_json: Optional schema JSON string for schema validation.
-        
+            request(dict): The request dict consisting of principal, action, resource or context keys.
+            policy_exp(str): The policy expression to evaluate the request on
+
         Returns:
-            True if valid, False otherwise. Raises CedarError on parse errors.
+            decision(str): "Allow" or "Deny"
         """
-        try:
-            # Parse validates syntax and semantics against schema if provided
-            parsed = parse_policy(policy_text, schema_json)
-            print("Policy parsed successfully.")
-            # Format to check/pretty-print
-            formatted = format_policies(policy_text)
-            print("Formatted policy:\n", formatted)
-            return True
-        except CedarError as e:
-            print(f"Validation failed: {e}")
-            return False
+        results: list[AuthzResult] = await asyncio.to_thread(is_authorized_batch, batch_requests, policy_expr, [])
+        return {res.correlation_id: res.decision.value for res in results}
 
     def _yamlpolicy2text(self, policies: list) -> str:
         """Function to convert yaml representation of policies to text
@@ -209,13 +212,14 @@ class CedarPolicyPlugin(Plugin):
         Returns:
             cedar_policy_text(str): string representation of policy
         """
-        cedar_policy_text = ""
+        cedar_policy_texts = []
         for policy in policies:
             actions = policy["action"] if isinstance(policy["action"], list) else [policy["action"]]
             resources = policy["resource"] if isinstance(policy["resource"], list) else [policy["resource"]]
             for res in resources:
-               cedar_policy_text = "\n\n".join(self._cedar_policy_template.format(principal_str=policy["principal"],actions_str=", ".join(actions),resource_str=res))
-        return cedar_policy_text
+                cedar_policy_texts.append(CEDAR_POLICY_TEMPLATE.format(principal_str=policy["principal"], actions_str=", ".join(actions), resource_str=res))
+        return "\n\n".join(cedar_policy_texts)
+     
 
     def _dsl2cedar(self, policy_string: str) -> str:
         """Function to convert custom dsl representation of policies to cedar
@@ -231,42 +235,23 @@ class CedarPolicyPlugin(Plugin):
         current_actions = []
         resource_category = None
         resource_name = None
-
-        pattern = r"\[role:([A-Za-z0-9_]+):(resource|prompt|server|agent)/([^\]]+)\]"
         for line in lines:
-            match = re.match(pattern, line)
+            match = self._custom_dsl_pattern.match(line)
             if match:
-                if current_role and resource_category and resource_name and current_actions:
-                    resource_category = resource_category.capitalize()
-                    policies.append(
-                        {
-                            "id": f"allow-{current_role}-{resource_category}",
-                            "effect": "Permit",
-                            "principal": f'Role::"{current_role}"',
-                            "action": [f'Action::"{a}"' for a in current_actions],
-                            "resource": f'{resource_category}::"{resource_name}"',
-                        }
-                    )
+                if current_role and resource_category and resource_name and current_actions: 
+                    policies.append(self._create_dsl_policy_template(current_role=current_role,resource_category=resource_category.capitalize(),current_actions=current_actions,resource_name=resource_name))    
                 current_role, resource_category, resource_name = match.groups()
                 current_actions = []
             else:
                 current_actions.append(line)
+        
         if current_role and resource_category and resource_name and current_actions:
-            resource_category = resource_category.capitalize()
-            policies.append(
-                {
-                    "id": f"allow-{current_role}-{resource_category}",
-                    "effect": "Permit",
-                    "principal": f'Role::"{current_role}"',
-                    "action": [f'Action::"{a}"' for a in current_actions],
-                    "resource": f'{resource_category}::"{resource_name}"',
-                }
-            )
-
+            policies.append(self._create_dsl_policy_template(current_role=current_role,resource_category=resource_category.capitalize(),current_actions=current_actions,resource_name=resource_name))    
+            
         cedar_policy_text = self._yamlpolicy2text(policies)
         return cedar_policy_text
 
-    def _preprocess_request(self, user: str, action: str, resource: str, hook_type: str) -> CedarInput:
+    def _preprocess_request(self, user: str = "", action: str = "", resource: str = "", hook_type: str = "", context: dict = {}, correlation_id: str = "") -> CedarInput:
         """Function to pre process request into a format that cedar accepts
         Args:
             user(str): name of the user
@@ -298,10 +283,10 @@ class CedarPolicyPlugin(Plugin):
 
         principal_expr = f'Role::"{user_role}"'
         action_expr = f'Action::"{action}"'
-        request = CedarInput(principal=principal_expr, action=action_expr, resource=resource_expr, context={}).model_dump()
+        request = CedarInput(principal=principal_expr, action=action_expr, resource=resource_expr, context=context, correlation_id=correlation_id).model_dump()
         return request
 
-    def _redact_output(self, payload: str, pattern: str) -> str:
+    def _redact_output(self, payload: str) -> str:
         """Function that redacts the output of prompt, tool or resource
         NOTE: It's an extremely simple logic for redaction, could be replaced with more advanced
         as per need.
@@ -311,145 +296,118 @@ class CedarPolicyPlugin(Plugin):
         Returns:
             redacted_text(str): redacted representation of payload string
         """
-        redacted_text = ""
-        if not pattern:
-            redacted_text = payload
-        elif pattern == "all":
-            redacted_text = "[REDACTED]"
+        if not self._output_redaction_pattern:
+            return payload
+        elif self._output_redaction_pattern == "all":
+            return self._output_redaction_string
         else:
-            redacted_text = re.sub(pattern, "[REDACTED]", payload)
-        return redacted_text
+            return self._output_redaction_pattern.sub("[REDACTED]", payload)
+        
 
-    async def prompt_pre_fetch(self, payload: PromptPrehookPayload, context: PluginContext) -> PromptPrehookResult:
-        """The plugin hook run before a prompt is retrieved and rendered.
+    # async def prompt_pre_fetch(self, payload: PromptPrehookPayload, context: PluginContext) -> PromptPrehookResult:
+    #     """The plugin hook run before a prompt is retrieved and rendered.
 
-        Args:
-            payload: The prompt payload to be analyzed.
-            context: contextual information about the hook call.
+    #     Args:
+    #         payload: The prompt payload to be analyzed.
+    #         context: contextual information about the hook call.
 
-        Returns:
-            The result of the plugin's analysis, including whether the prompt can proceed.
-        """
-        hook_type = "prompt_pre_fetch"
-        logger.info(f"Processing {hook_type} for '{payload.args}' with {len(payload.args) if payload.args else 0}")
-        logger.info(f"Processing context {context}")
+    #     Returns:
+    #         The result of the plugin's analysis, including whether the prompt can proceed.
+    #     """
+    #     hook_type = "prompt_pre_fetch"
+    #     logger.info(f"Processing {hook_type} for '{payload.args}' with {len(payload.args) if payload.args else 0}")
+    #     logger.info(f"Processing context {context}")
 
-        if not payload.args:
-            return PromptPrehookResult()
+    #     if not payload.args:
+    #         return PromptPrehookResult()
 
-        policy = None
-        user = ""
-        result_full = None
-        result_redacted = None
+    #     policy = None
+    #     user = ""
+    #     result_full = None
+    #     result_redacted = None
 
-        if self.cedar_config.policy_lang == "cedar":
-            if self.cedar_config.policy:
-                policy = self._yamlpolicy2text(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
-        if self.cedar_config.policy_lang == "custom_dsl":
-            if self.cedar_config.policy:
-                policy = self._dsl2cedar(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
+    #     if context.global_context.user:
+    #         user = context.global_context.user
 
-        if context.global_context.user:
-            user = context.global_context.user
+    #     if self.cedar_config.policy_output_keywords:
+    #         view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
+    #         view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
+    #         if not view_full and not view_redacted:
+    #             logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
+    #             raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
+    #         if view_full and policy:
+    #             request = self._preprocess_request(user, view_full, payload.prompt_id, hook_type)
+    #             result_full = self._evaluate_policy(request, policy)
+    #         if view_redacted and policy:
+    #             request = self._preprocess_request(user, view_redacted, payload.prompt_id, hook_type)
+    #             result_redacted = self._evaluate_policy(request, policy)
 
-        if self.cedar_config.policy_output_keywords:
-            view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
-            view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
-            if not view_full and not view_redacted:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
-            if view_full and policy:
-                request = self._preprocess_request(user, view_full, payload.prompt_id, hook_type)
-                result_full = self._evaluate_policy(request, policy)
-            if view_redacted and policy:
-                request = self._preprocess_request(user, view_redacted, payload.prompt_id, hook_type)
-                result_redacted = self._evaluate_policy(request, policy)
+    #     if result_full == Decision.Deny.value and result_redacted == Decision.Deny.value:
+    #         violation = PluginViolation(
+    #             reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
+    #             description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
+    #             code=CedarCodes.DENIAL_CODE,
+    #             details={},
+    #         )
+    #         return PromptPrehookResult(modified_payload=payload, violation=violation, continue_processing=False)
+    #     return PromptPrehookResult(continue_processing=True)
 
-        if result_full == Decision.Deny.value and result_redacted == Decision.Deny.value:
-            violation = PluginViolation(
-                reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
-                description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
-                code=CedarCodes.DENIAL_CODE,
-                details={},
-            )
-            return PromptPrehookResult(modified_payload=payload, violation=violation, continue_processing=False)
-        return PromptPrehookResult(continue_processing=True)
+    # async def prompt_post_fetch(self, payload: PromptPosthookPayload, context: PluginContext) -> PromptPosthookResult:
+    #     """Plugin hook run after a prompt is rendered.
 
-    async def prompt_post_fetch(self, payload: PromptPosthookPayload, context: PluginContext) -> PromptPosthookResult:
-        """Plugin hook run after a prompt is rendered.
+    #     Args:
+    #         payload: The prompt payload to be analyzed.
+    #         context: Contextual information about the hook call.
 
-        Args:
-            payload: The prompt payload to be analyzed.
-            context: Contextual information about the hook call.
+    #     Returns:
+    #         The result of the plugin's analysis, including whether the prompt can proceed.
+    #     """
+    #     hook_type = "prompt_post_fetch"
+    #     logger.info(f"Processing {hook_type} for '{payload.result}'")
+    #     logger.info(f"Processing context {context}")
 
-        Returns:
-            The result of the plugin's analysis, including whether the prompt can proceed.
-        """
-        hook_type = "prompt_post_fetch"
-        logger.info(f"Processing {hook_type} for '{payload.result}'")
-        logger.info(f"Processing context {context}")
+    #     if not payload.result:
+    #         return PromptPosthookResult()
 
-        if not payload.result:
-            return PromptPosthookResult()
+    #     policy = None
+    #     user = ""
+    #     result_full = None
+    #     result_redacted = None
 
-        policy = None
-        user = ""
-        result_full = None
-        result_redacted = None
+    #     if context.global_context.user:
+    #         user = context.global_context.user
 
-        if self.cedar_config.policy_lang == "cedar":
-            if self.cedar_config.policy:
-                policy = self._yamlpolicy2text(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
-        if self.cedar_config.policy_lang == "custom_dsl":
-            if self.cedar_config.policy:
-                policy = self._dsl2cedar(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
+    #     if self.cedar_config.policy_output_keywords:
+    #         view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
+    #         view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
+    #         if not view_full and not view_redacted:
+    #             logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
+    #             raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
+    #         if view_full and policy:
+    #             request = self._preprocess_request(user, view_full, payload.prompt_id, hook_type)
+    #             result_full = self._evaluate_policy(request, policy)
+    #         if view_redacted and policy:
+    #             request = self._preprocess_request(user, view_redacted, payload.prompt_id, hook_type)
+    #             result_redacted = self._evaluate_policy(request, policy)
 
-        if context.global_context.user:
-            user = context.global_context.user
+    #         if result_full == Decision.Allow.value:
+    #             return PromptPosthookResult(continue_processing=True)
 
-        if self.cedar_config.policy_output_keywords:
-            view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
-            view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
-            if not view_full and not view_redacted:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
-            if view_full and policy:
-                request = self._preprocess_request(user, view_full, payload.prompt_id, hook_type)
-                result_full = self._evaluate_policy(request, policy)
-            if view_redacted and policy:
-                request = self._preprocess_request(user, view_redacted, payload.prompt_id, hook_type)
-                result_redacted = self._evaluate_policy(request, policy)
+    #         if result_redacted == Decision.Allow.value:
+    #             if payload.result.messages:
+    #                 for index, message in enumerate(payload.result.messages):
+    #                     value = self._redact_output(message.content.text, self._output_redaction_pattern)
+    #                     payload.result.messages[index].content.text = value
+    #             return PromptPosthookResult(modified_payload=payload, continue_processing=True)
 
-            if result_full == Decision.Allow.value:
-                return PromptPosthookResult(continue_processing=True)
-
-            if result_redacted == Decision.Allow.value:
-                if payload.result.messages:
-                    for index, message in enumerate(payload.result.messages):
-                        value = self._redact_output(message.content.text, self.cedar_config.policy_redaction_spec.pattern)
-                        payload.result.messages[index].content.text = value
-                return PromptPosthookResult(modified_payload=payload, continue_processing=True)
-
-            violation = PluginViolation(
-                reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
-                description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
-                code=CedarCodes.DENIAL_CODE,
-                details={},
-            )
-            return PromptPosthookResult(modified_payload=payload, violation=violation, continue_processing=False)
-        return PromptPosthookResult(continue_processing=True)
+    #         violation = PluginViolation(
+    #             reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
+    #             description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
+    #             code=CedarCodes.DENIAL_CODE,
+    #             details={},
+    #         )
+    #         return PromptPosthookResult(modified_payload=payload, violation=violation, continue_processing=False)
+    #     return PromptPosthookResult(continue_processing=True)
 
     async def tool_pre_invoke(self, payload: ToolPreInvokePayload, context: PluginContext) -> ToolPreInvokeResult:
         """Plugin hook run before a tool is invoked.
@@ -482,7 +440,7 @@ class CedarPolicyPlugin(Plugin):
 
         if self._cedar_policy:
             decision = await self._evaluate_policy(request, self._cedar_policy)
-            if decision == Decision.Deny.value:
+            if decision == "Deny":
                 violation = PluginViolation(
                     reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
                     description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
@@ -503,6 +461,16 @@ class CedarPolicyPlugin(Plugin):
             The result of the plugin's analysis, including whether the tool result should proceed.
         """
 
+        """Plugin hook run after a tool is invoked.
+
+        Args:
+            payload: The tool result payload to be analyzed.
+            context: Contextual information about the hook call.
+
+        Returns:
+            The result of the plugin's analysis, including whether the tool result should proceed.
+        """
+
         hook_type = "tool_post_invoke"
         logger.info(f"Processing {hook_type} for '{payload.result}' with {len(payload.result) if payload.result else 0}")
         logger.info(f"Processing context {context}")
@@ -510,61 +478,51 @@ class CedarPolicyPlugin(Plugin):
         if not payload.result:
             return ToolPostInvokeResult()
 
-        policy = None
         user = ""
         server_id = ""
-        result_full = None
-        result_redacted = None
-
-        if self.cedar_config.policy_lang == "cedar":
-            if self.cedar_config.policy:
-                policy = self._yamlpolicy2text(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
-        if self.cedar_config.policy_lang == "custom_dsl":
-            if self.cedar_config.policy:
-                policy = self._dsl2cedar(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
 
         if context.global_context.user:
             user = context.global_context.user
             server_id = context.global_context.server_id
 
-        if self.cedar_config.policy_output_keywords:
-            view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
-            view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
-            if not view_full and not view_redacted:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
-            if view_full and policy:
-                request = self._preprocess_request(user, view_full, server_id, hook_type)
-                result_full = self._evaluate_policy(request, policy)
-            if view_redacted and policy:
-                request = self._preprocess_request(user, view_redacted, server_id, hook_type)
-                result_redacted = self._evaluate_policy(request, policy)
+        output_view_checks = []
+        # If a cedar policy has been defined
+        if self._cedar_policy:
+            # If output keywords have been defined
+            if self.cedar_config.policy_output_keywords:
+                view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
+                view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
+                if not view_full and not view_redacted:
+                    logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
+                    raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
+                if view_full:
+                    request = self._preprocess_request(user, view_full, server_id, hook_type, context = {}, correlation_id = "view_full")
+                    output_view_checks.append(request)
+                if view_redacted:
+                    request = self._preprocess_request(user, view_redacted, server_id, hook_type,  context = {}, correlation_id = "view_redacted")
+                    output_view_checks.append(request)
+            
+            request = self._preprocess_request(user, payload.name, server_id, hook_type, context = {}, correlation_id = "tool")
+            output_view_checks.append(request)
+            results_map = await self._evaluate_policy_batch(output_view_checks, self._cedar_policy)
+            
 
-        # Evaluate Policy and based on that redact output
-        if policy:
-            request = self._preprocess_request(user, payload.name, server_id, hook_type)
-            result_action = self._evaluate_policy(request, policy)
-            # Check if full output view is allowed by policy
-            if result_action == Decision.Allow.value:
-                if result_full == Decision.Allow.value:
+            # If a specific tool access is allowed to a user, then it's verified what type of view is allowed to the user.
+            if results_map["tool"]== "Allow":
+                if "view_full" in results_map and results_map["view_full"] == "Allow":
                     return ToolPostInvokeResult(continue_processing=True)
-                if result_redacted == Decision.Allow.value:
+                elif "view_redacted" in results_map and results_map["view_redacted"]== "Allow":
                     if payload.result and isinstance(payload.result, dict):
                         for key in payload.result:
                             if isinstance(payload.result[key], str):
-                                value = self._redact_output(payload.result[key], self.cedar_config.policy_redaction_spec.pattern)
+                                value = self._redact_output(payload.result[key])
                                 payload.result[key] = value
                     elif payload.result and isinstance(payload.result, str):
-                        payload.result = self._redact_output(payload.result, self.cedar_config.policy_redaction_spec.pattern)
+                        payload.result = self._redact_output(payload.result)
                     return ToolPostInvokeResult(continue_processing=True, modified_payload=payload)
-            # If none of the redacted or full output views are allowed by policy then deny
-            else:
+                else:
+                    return ToolPostInvokeResult(continue_processing=True)
+            else: 
                 violation = PluginViolation(
                     reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
                     description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
@@ -574,144 +532,118 @@ class CedarPolicyPlugin(Plugin):
                 return ToolPostInvokeResult(modified_payload=payload, violation=violation, continue_processing=False)
         return ToolPostInvokeResult(continue_processing=True)
 
-    async def resource_pre_fetch(self, payload: ResourcePreFetchPayload, context: PluginContext) -> ResourcePreFetchResult:
-        """OPA Plugin hook that runs after resource pre fetch. This hook takes in payload and context and further evaluates rego
-        policies on the input by sending the request to opa server.
+    # async def resource_pre_fetch(self, payload: ResourcePreFetchPayload, context: PluginContext) -> ResourcePreFetchResult:
+    #     """OPA Plugin hook that runs after resource pre fetch. This hook takes in payload and context and further evaluates rego
+    #     policies on the input by sending the request to opa server.
 
-        Args:
-            payload: The resource pre fetch input or payload to be analyzed.
-            context: Contextual information about the hook call.
+    #     Args:
+    #         payload: The resource pre fetch input or payload to be analyzed.
+    #         context: Contextual information about the hook call.
 
-        Returns:
-            The result of the plugin's analysis, including whether the resource input can be passed further.
-        """
+    #     Returns:
+    #         The result of the plugin's analysis, including whether the resource input can be passed further.
+    #     """
 
-        hook_type = "resource_pre_fetch"
-        logger.info(f"Processing {hook_type} for '{payload.uri}'")
-        logger.info(f"Processing context {context}")
+    #     hook_type = "resource_pre_fetch"
+    #     logger.info(f"Processing {hook_type} for '{payload.uri}'")
+    #     logger.info(f"Processing context {context}")
 
-        if not payload.uri:
-            return ResourcePreFetchResult()
+    #     if not payload.uri:
+    #         return ResourcePreFetchResult()
 
-        try:
-            parsed = urlparse(payload.uri)
-        except Exception as e:
-            violation = PluginViolation(reason="Invalid URI", description=f"Could not parse resource URI: {e}", code="INVALID_URI", details={"uri": payload.uri, "error": str(e)})
-            return ResourcePreFetchResult(continue_processing=False, violation=violation)
+    #     try:
+    #         parsed = urlparse(payload.uri)
+    #     except Exception as e:
+    #         violation = PluginViolation(reason="Invalid URI", description=f"Could not parse resource URI: {e}", code="INVALID_URI", details={"uri": payload.uri, "error": str(e)})
+    #         return ResourcePreFetchResult(continue_processing=False, violation=violation)
 
-        # Check if URI has a scheme
-        if not parsed.scheme:
-            violation = PluginViolation(reason="Invalid URI format", description="URI must have a valid scheme (protocol)", code="INVALID_URI", details={"uri": payload.uri})
-            return ResourcePreFetchResult(continue_processing=False, violation=violation)
+    #     # Check if URI has a scheme
+    #     if not parsed.scheme:
+    #         violation = PluginViolation(reason="Invalid URI format", description="URI must have a valid scheme (protocol)", code="INVALID_URI", details={"uri": payload.uri})
+    #         return ResourcePreFetchResult(continue_processing=False, violation=violation)
 
-        policy = None
-        user = ""
-        result_full = None
-        result_redacted = None
+    #     policy = None
+    #     user = ""
+    #     result_full = None
+    #     result_redacted = None
 
-        if self.cedar_config.policy_lang == "cedar":
-            if self.cedar_config.policy:
-                policy = self._yamlpolicy2text(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
-        if self.cedar_config.policy_lang == "custom_dsl":
-            if self.cedar_config.policy:
-                policy = self._dsl2cedar(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
+    #     if context.global_context.user:
+    #         user = context.global_context.user
 
-        if context.global_context.user:
-            user = context.global_context.user
+    #     if self.cedar_config.policy_output_keywords:
+    #         view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
+    #         view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
+    #         if not view_full and not view_redacted:
+    #             logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
+    #             raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
+    #         if view_full and policy:
+    #             request = self._preprocess_request(user, view_full, payload.uri, hook_type)
+    #             result_full = await self._evaluate_policy(request, policy)
+    #         if view_redacted and policy:
+    #             request = self._preprocess_request(user, view_redacted, payload.uri, hook_type)
+    #             result_redacted = await self._evaluate_policy(request, policy)
 
-        if self.cedar_config.policy_output_keywords:
-            view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
-            view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
-            if not view_full and not view_redacted:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
-            if view_full and policy:
-                request = self._preprocess_request(user, view_full, payload.uri, hook_type)
-                result_full = self._evaluate_policy(request, policy)
-            if view_redacted and policy:
-                request = self._preprocess_request(user, view_redacted, payload.uri, hook_type)
-                result_redacted = self._evaluate_policy(request, policy)
+    #     if result_full == Decision.Deny.value and result_redacted == Decision.Deny.value:
+    #         violation = PluginViolation(
+    #             reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
+    #             description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
+    #             code=CedarCodes.DENIAL_CODE,
+    #             details={},
+    #         )
+    #         return ResourcePreFetchResult(modified_payload=payload, violation=violation, continue_processing=False)
+    #     return ResourcePreFetchResult(continue_processing=True)
 
-        if result_full == Decision.Deny.value and result_redacted == Decision.Deny.value:
-            violation = PluginViolation(
-                reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
-                description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
-                code=CedarCodes.DENIAL_CODE,
-                details={},
-            )
-            return ResourcePreFetchResult(modified_payload=payload, violation=violation, continue_processing=False)
-        return ResourcePreFetchResult(continue_processing=True)
+    # async def resource_post_fetch(self, payload: ResourcePostFetchPayload, context: PluginContext) -> ResourcePostFetchResult:
+    #     """OPA Plugin hook that runs after resource post fetch. This hook takes in payload and context and further evaluates rego
+    #     policies on the output by sending the request to opa server.
 
-    async def resource_post_fetch(self, payload: ResourcePostFetchPayload, context: PluginContext) -> ResourcePostFetchResult:
-        """OPA Plugin hook that runs after resource post fetch. This hook takes in payload and context and further evaluates rego
-        policies on the output by sending the request to opa server.
+    #     Args:
+    #         payload: The resource post fetch output or payload to be analyzed.
+    #         context: Contextual information about the hook call.
 
-        Args:
-            payload: The resource post fetch output or payload to be analyzed.
-            context: Contextual information about the hook call.
+    #     Returns:
+    #         The result of the plugin's analysis, including whether the resource output can be passed further.
+    #     """
+    #     hook_type = "resource_post_fetch"
+    #     logger.info(f"Processing {hook_type} for '{payload.uri}'")
+    #     logger.info(f"Processing context {context}")
 
-        Returns:
-            The result of the plugin's analysis, including whether the resource output can be passed further.
-        """
-        hook_type = "resource_post_fetch"
-        logger.info(f"Processing {hook_type} for '{payload.uri}'")
-        logger.info(f"Processing context {context}")
+    #     policy = None
+    #     user = ""
+    #     result_full = None
+    #     result_redacted = None
 
-        policy = None
-        user = ""
-        result_full = None
-        result_redacted = None
+    #     if context.global_context.user:
+    #         user = context.global_context.user
 
-        if self.cedar_config.policy_lang == "cedar":
-            if self.cedar_config.policy:
-                policy = self._yamlpolicy2text(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
-        if self.cedar_config.policy_lang == "custom_dsl":
-            if self.cedar_config.policy:
-                policy = self._dsl2cedar(self.cedar_config.policy)
-            else:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_POLICY.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_POLICY.value, plugin_name="CedarPolicyPlugin"))
+    #     if self.cedar_config.policy_output_keywords:
+    #         view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
+    #         view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
+    #         if not view_full and not view_redacted:
+    #             logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
+    #             raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
+    #         if view_full and policy:
+    #             request = self._preprocess_request(user, view_full, payload.uri, hook_type)
+    #             result_full = await self._evaluate_policy(request, policy)
+    #         if view_redacted and policy:
+    #             request = self._preprocess_request(user, view_redacted, payload.uri, hook_type)
+    #             result_redacted = await self._evaluate_policy(request, policy)
 
-        if context.global_context.user:
-            user = context.global_context.user
+    #         if result_full == Decision.Allow.value:
+    #             return ResourcePostFetchResult(continue_processing=True)
 
-        if self.cedar_config.policy_output_keywords:
-            view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
-            view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
-            if not view_full and not view_redacted:
-                logger.error(f"{CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value}")
-                raise PluginError(PluginErrorModel(message=CedarErrorCodes.UNSPECIFIED_OUTPUT_ACTION.value, plugin_name="CedarPolicyPlugin"))
-            if view_full and policy:
-                request = self._preprocess_request(user, view_full, payload.uri, hook_type)
-                result_full = self._evaluate_policy(request, policy)
-            if view_redacted and policy:
-                request = self._preprocess_request(user, view_redacted, payload.uri, hook_type)
-                result_redacted = self._evaluate_policy(request, policy)
+    #         if result_redacted == Decision.Allow.value:
+    #             if payload.content:
+    #                 if hasattr(payload.content, "text"):
+    #                     value = self._redact_output(payload.content.text, self._output_redaction_pattern)
+    #                     payload.content.text = value
+    #             return ResourcePostFetchResult(modified_payload=payload, continue_processing=True)
 
-            if result_full == Decision.Allow.value:
-                return ResourcePostFetchResult(continue_processing=True)
-
-            if result_redacted == Decision.Allow.value:
-                if payload.content:
-                    if hasattr(payload.content, "text"):
-                        value = self._redact_output(payload.content.text, self.cedar_config.policy_redaction_spec.pattern)
-                        payload.content.text = value
-                return ResourcePostFetchResult(modified_payload=payload, continue_processing=True)
-
-            violation = PluginViolation(
-                reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
-                description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
-                code=CedarCodes.DENIAL_CODE,
-                details={},
-            )
-            return ResourcePostFetchResult(modified_payload=payload, violation=violation, continue_processing=False)
-        return ResourcePostFetchResult(continue_processing=True)
+    #         violation = PluginViolation(
+    #             reason=CedarResponseTemplates.CEDAR_REASON.format(hook_type=hook_type),
+    #             description=CedarResponseTemplates.CEDAR_DESC.format(hook_type=hook_type),
+    #             code=CedarCodes.DENIAL_CODE,
+    #             details={},
+    #         )
+    #         return ResourcePostFetchResult(modified_payload=payload, violation=violation, continue_processing=False)
+    #     return ResourcePostFetchResult(continue_processing=True)
