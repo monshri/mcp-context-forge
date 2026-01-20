@@ -1443,6 +1443,9 @@ class EmailTeam(Base):
     api_tokens: Mapped[List["EmailApiToken"]] = relationship("EmailApiToken", back_populates="team", cascade="all, delete-orphan")
     creator: Mapped["EmailUser"] = relationship("EmailUser", foreign_keys=[created_by])
 
+    # Index for search and pagination performance
+    __table_args__ = (Index("ix_email_teams_name_id", "name", "id"),)
+
     def __repr__(self) -> str:
         """String representation of the team.
 
@@ -4240,6 +4243,11 @@ class Server(Base):
     owner_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     visibility: Mapped[str] = mapped_column(String(20), nullable=False, default="public")
 
+    # OAuth 2.0 configuration for RFC 9728 Protected Resource Metadata
+    # When enabled, MCP clients can authenticate using OAuth with browser-based IDP SSO
+    oauth_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    oauth_config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+
     # Relationship for loading team names (only active teams)
     # Uses default lazy loading - team name is only loaded when accessed
     # For list/admin views, use explicit joinedload(DbServer.email_team) for single-query loading
@@ -4326,8 +4334,14 @@ class Gateway(Base):
     # federated_prompts: Mapped[List["Prompt"]] = relationship(secondary=prompt_gateway_table, back_populates="federated_with")
 
     # Authorizations
-    auth_type: Mapped[Optional[str]] = mapped_column(String(20), default=None)  # "basic", "bearer", "headers", "oauth" or None
+    auth_type: Mapped[Optional[str]] = mapped_column(String(20), default=None)  # "basic", "bearer", "headers", "oauth", "query_param" or None
     auth_value: Mapped[Optional[Dict[str, str]]] = mapped_column(JSON)
+    auth_query_params: Mapped[Optional[Dict[str, str]]] = mapped_column(
+        JSON,
+        nullable=True,
+        default=None,
+        comment="Encrypted query parameters for auth. Format: {'param_name': 'encrypted_value'}",
+    )
 
     # OAuth configuration
     oauth_config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True, comment="OAuth 2.0 configuration including grant_type, client_id, encrypted client_secret, URLs, and scopes")
@@ -4445,8 +4459,14 @@ class A2AAgent(Base):
     config: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
 
     # Authorizations
-    auth_type: Mapped[Optional[str]] = mapped_column(String(20), default=None)  # "basic", "bearer", "headers", "oauth" or None
+    auth_type: Mapped[Optional[str]] = mapped_column(String(20), default=None)  # "basic", "bearer", "headers", "oauth", "query_param" or None
     auth_value: Mapped[Optional[Dict[str, str]]] = mapped_column(JSON)
+    auth_query_params: Mapped[Optional[Dict[str, str]]] = mapped_column(
+        JSON,
+        nullable=True,
+        default=None,
+        comment="Encrypted query parameters for auth. Format: {'param_name': 'encrypted_value'}",
+    )
 
     # OAuth configuration
     oauth_config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True, comment="OAuth 2.0 configuration including grant_type, client_id, encrypted client_secret, URLs, and scopes")
@@ -5091,7 +5111,10 @@ class SSOProvider(Base):
     auto_create_users: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     team_mapping: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
-    # Metadata
+    # Provider-specific metadata (e.g., role mappings, claim configurations)
+    provider_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+
+    # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 

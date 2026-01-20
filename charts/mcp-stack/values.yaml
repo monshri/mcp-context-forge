@@ -337,6 +337,12 @@ mcpContextForge:
     SECURE_COOKIES: "true"           # force secure cookie flags
     COOKIE_SAMESITE: lax             # cookie SameSite attribute
 
+    # ─ Query Parameter Authentication (INSECURE) ─
+    # WARNING: API keys in URLs may appear in proxy logs, browser history, server logs.
+    # See CWE-598. Only use when upstream MCP server (e.g., Tavily) requires it.
+    INSECURE_ALLOW_QUERYPARAM_AUTH: "false"  # enable query param auth (default: disabled)
+    INSECURE_QUERYPARAM_AUTH_ALLOWED_HOSTS: "[]"  # JSON array of allowed hosts, e.g. '["mcp.tavily.com"]'
+
     # ─ Logging ─
     LOG_LEVEL: INFO                  # DEBUG, INFO, WARNING, ERROR, CRITICAL
     LOG_FORMAT: json                 # json or text format
@@ -576,12 +582,15 @@ mcpContextForge:
     BASIC_AUTH_USER: admin                 # username for basic-auth login
     BASIC_AUTH_PASSWORD: changeme          # password for basic-auth (CHANGE IN PROD!)
     AUTH_REQUIRED: "true"                  # enforce authentication globally (true/false)
+    MCP_REQUIRE_AUTH: "false"              # require auth for /mcp endpoints (false = allow public-only access)
     JWT_SECRET_KEY: my-test-key            # secret key used to sign JWT tokens
     JWT_ALGORITHM: HS256                   # signing algorithm for JWT tokens
     JWT_AUDIENCE: mcpgateway-api           # JWT audience claim for token validation
     JWT_ISSUER: mcpgateway                 # JWT issuer claim for token validation
     TOKEN_EXPIRY: "10080"                  # JWT validity (minutes); 10080 = 7 days
     REQUIRE_TOKEN_EXPIRATION: "false"      # require all JWT tokens to have expiration claims
+    REQUIRE_JTI: "false"                   # require JTI (JWT ID) claim for revocation support
+    REQUIRE_USER_IN_DB: "false"            # require all users to exist in database (disables platform admin bootstrap)
     AUTH_ENCRYPTION_SECRET: my-test-salt   # passphrase to derive AES key for secure storage
 
     # ─ Email-Based Authentication ─
@@ -628,8 +637,11 @@ mcpContextForge:
 
     # ─ JWT Configuration (Advanced) ─
     JWT_AUDIENCE_VERIFICATION: "true"      # JWT audience verification (disable for DCR)
+    JWT_ISSUER_VERIFICATION: "true"        # JWT issuer verification (disable if needed)
     JWT_PRIVATE_KEY_PATH: ""               # path to JWT private key file (RSA/ECDSA algorithms)
     JWT_PUBLIC_KEY_PATH: ""                # path to JWT public key file (RSA/ECDSA algorithms)
+    EMBED_ENVIRONMENT_IN_TOKENS: "false"   # embed env claim in gateway-issued JWTs
+    VALIDATE_TOKEN_ENVIRONMENT: "false"    # reject tokens with mismatched env claim
 
     # ─ SSO (Single Sign-On) Configuration ─
     SSO_ENABLED: "false"                   # master switch for Single Sign-On authentication

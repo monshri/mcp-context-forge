@@ -16,6 +16,7 @@ It handles:
 
 # Standard
 import base64
+import binascii
 from datetime import datetime, timezone
 from functools import lru_cache
 import os
@@ -36,6 +37,7 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamablehttp_client
 import orjson
+from pydantic import ValidationError
 from sqlalchemy import and_, delete, desc, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, selectinload, Session
@@ -87,6 +89,8 @@ from mcpgateway.utils.passthrough_headers import compute_passthrough_headers_cac
 from mcpgateway.utils.retry_manager import ResilientHttpClient
 from mcpgateway.utils.services_auth import decode_auth
 from mcpgateway.utils.sqlalchemy_modifier import json_contains_expr
+from mcpgateway.utils.ssl_context_cache import get_cached_ssl_context
+from mcpgateway.utils.url_auth import apply_query_param_auth, sanitize_exception_message, sanitize_url_for_logging
 from mcpgateway.utils.validate_signature import validate_signature
 
 # Cache import (lazy to avoid circular dependencies)
@@ -519,6 +523,7 @@ class ToolService:
                 "passthrough_headers": gateway.passthrough_headers or [],
                 "auth_type": gateway.auth_type,
                 "auth_value": gateway.auth_value,
+                "auth_query_params": getattr(gateway, "auth_query_params", None),  # Query param auth
                 "oauth_config": getattr(gateway, "oauth_config", None),
                 "ca_certificate": getattr(gateway, "ca_certificate", None),
                 "ca_certificate_sig": getattr(gateway, "ca_certificate_sig", None),
@@ -561,6 +566,76 @@ class ToolService:
         except Exception as exc:
             logger.debug("Failed to build PydanticGateway from cache payload: %s", exc)
             return None
+
+    async def _check_tool_access(
+        self,
+        db: Session,
+        tool_payload: Dict[str, Any],
+        user_email: Optional[str],
+        token_teams: Optional[List[str]],
+    ) -> bool:
+        """Check if user has access to a tool based on visibility rules.
+
+        Implements the same access control logic as list_tools() for consistency.
+
+        Access Rules:
+        - Public tools: Accessible by all authenticated users
+        - Team tools: Accessible by team members (team_id in user's teams)
+        - Private tools: Accessible only by owner (owner_email matches)
+
+        Args:
+            db: Database session for team membership lookup if needed.
+            tool_payload: Tool data dict with visibility, team_id, owner_email.
+            user_email: Email of the requesting user (None = unauthenticated).
+            token_teams: List of team IDs from token.
+                - None = unrestricted admin access
+                - [] = public-only token
+                - [...] = team-scoped token
+
+        Returns:
+            True if access is allowed, False otherwise.
+        """
+        visibility = tool_payload.get("visibility", "public")
+        tool_team_id = tool_payload.get("team_id")
+        tool_owner_email = tool_payload.get("owner_email")
+
+        # Public tools are accessible by everyone
+        if visibility == "public":
+            return True
+
+        # Admin bypass: token_teams=None AND user_email=None means unrestricted admin
+        # This happens when is_admin=True and no team scoping in token
+        if token_teams is None and user_email is None:
+            return True
+
+        # No user context (but not admin) = deny access to non-public tools
+        if not user_email:
+            return False
+
+        # Public-only tokens (empty teams array) can ONLY access public tools
+        is_public_only_token = token_teams is not None and len(token_teams) == 0
+        if is_public_only_token:
+            return False  # Already checked public above
+
+        # Owner can always access their own tools
+        if tool_owner_email and tool_owner_email == user_email:
+            return True
+
+        # Team tools: check team membership (matches list_tools behavior)
+        if tool_team_id:
+            # Use token_teams if provided, otherwise look up from DB
+            if token_teams is not None:
+                team_ids = token_teams
+            else:
+                team_service = TeamManagementService(db)
+                user_teams = await team_service.get_user_teams(user_email)
+                team_ids = [team.id for team in user_teams]
+
+            # Team/public visibility allows access if user is in the team
+            if visibility in ["team", "public"] and tool_team_id in team_ids:
+                return True
+
+        return False
 
     def convert_tool_to_read(self, tool: DbTool, include_metrics: bool = False, include_auth: bool = True) -> ToolRead:
         """Converts a DbTool instance into a ToolRead model, including aggregated metrics and
@@ -605,12 +680,12 @@ class ToolService:
                 tool_dict["auth"] = {
                     "auth_type": "basic",
                     "username": username,
-                    "password": "********" if password else None,
+                    "password": settings.masked_auth_value if password else None,
                 }
             elif tool.auth_type == "bearer":
                 tool_dict["auth"] = {
                     "auth_type": "bearer",
-                    "token": "********" if decoded_auth_value["Authorization"] else None,
+                    "token": settings.masked_auth_value if decoded_auth_value["Authorization"] else None,
                 }
             elif tool.auth_type == "authheaders":
                 # Get first key
@@ -618,7 +693,7 @@ class ToolService:
                 tool_dict["auth"] = {
                     "auth_type": "authheaders",
                     "auth_header_key": first_key,
-                    "auth_header_value": "********" if decoded_auth_value[first_key] else None,
+                    "auth_header_value": settings.masked_auth_value if decoded_auth_value[first_key] else None,
                 }
             else:
                 tool_dict["auth"] = None
@@ -1618,9 +1693,13 @@ class ToolService:
             True
         """
         # Check cache for first page only (cursor=None)
-        # Skip caching when user_email is provided (team-filtered results are user-specific) or page based pagination
+        # Skip caching when:
+        # - user_email is provided (team-filtered results are user-specific)
+        # - token_teams is set (scoped access, e.g., public-only or team-scoped tokens)
+        # - page-based pagination is used
+        # This prevents cache poisoning where admin results could leak to public-only requests
         cache = _get_registry_cache()
-        if cursor is None and user_email is None and page is None:
+        if cursor is None and user_email is None and token_teams is None and page is None:
             filters_hash = cache.hash_filters(include_inactive=include_inactive, tags=sorted(tags) if tags else None, gateway_id=gateway_id, limit=limit)
             cached = await cache.get("tools", filters_hash)
             if cached is not None:
@@ -1634,15 +1713,18 @@ class ToolService:
         # Apply active/inactive filter
         if not include_inactive:
             query = query.where(DbTool.enabled)
-        # Apply team-based access control if user_email is provided
-        if user_email:
+        # Apply team-based access control if user_email is provided OR token_teams is explicitly set
+        # This ensures unauthenticated requests with token_teams=[] only see public tools
+        if user_email or token_teams is not None:
             # Use token_teams if provided (for MCP/API token access), otherwise look up from DB
             if token_teams is not None:
                 team_ids = token_teams
-            else:
+            elif user_email:
                 team_service = TeamManagementService(db)
                 user_teams = await team_service.get_user_teams(user_email)
                 team_ids = [team.id for team in user_teams]
+            else:
+                team_ids = []
 
             # Check if this is a public-only token (empty teams array)
             # Public-only tokens can ONLY see public resources - no owner access
@@ -1656,7 +1738,7 @@ class ToolService:
                     and_(DbTool.team_id == team_id, DbTool.visibility.in_(["team", "public"])),
                 ]
                 # Only include owner access for non-public-only tokens
-                if not is_public_only_token:
+                if not is_public_only_token and user_email:
                     access_conditions.append(and_(DbTool.team_id == team_id, DbTool.owner_email == user_email))
                 query = query.where(or_(*access_conditions))
             else:
@@ -1664,8 +1746,8 @@ class ToolService:
                 access_conditions = [
                     DbTool.visibility == "public",
                 ]
-                # Only include owner access for non-public-only tokens
-                if not is_public_only_token:
+                # Only include owner access for non-public-only tokens with user_email
+                if not is_public_only_token and user_email:
                     access_conditions.append(DbTool.owner_email == user_email)
                 if team_ids:
                     access_conditions.append(and_(DbTool.team_id.in_(team_ids), DbTool.visibility.in_(["team", "public"])))
@@ -1712,7 +1794,11 @@ class ToolService:
         # Team names are loaded via joinedload(DbTool.email_team)
         result = []
         for s in tools_db:
-            result.append(self.convert_tool_to_read(s, include_metrics=False, include_auth=False))
+            try:
+                result.append(self.convert_tool_to_read(s, include_metrics=False, include_auth=False))
+            except (ValidationError, ValueError, KeyError, TypeError, binascii.Error) as e:
+                logger.exception(f"Failed to convert tool {getattr(s, 'id', 'unknown')} ({getattr(s, 'name', 'unknown')}): {e}")
+                # Continue with remaining tools instead of failing completely
 
         # Return appropriate format based on pagination type
         if page is not None:
@@ -1725,8 +1811,9 @@ class ToolService:
 
         # Cursor-based format
 
-        # Cache first page results - only for non-user-specific queries
-        if cursor is None and user_email is None:
+        # Cache first page results - only for non-user-specific/non-scoped queries
+        # Must match the same conditions as cache lookup to prevent cache poisoning
+        if cursor is None and user_email is None and token_teams is None:
             try:
                 cache_data = {"tools": [s.model_dump(mode="json") for s in result], "next_cursor": next_cursor}
                 await cache.set("tools", cache_data, filters_hash)
@@ -1803,15 +1890,18 @@ class ToolService:
         if not include_inactive:
             query = query.where(DbTool.enabled)
 
-        # Add visibility filtering if user context provided
-        if user_email:
+        # Add visibility filtering if user context OR token_teams provided
+        # This ensures unauthenticated requests with token_teams=[] only see public tools
+        if user_email or token_teams is not None:
             # Use token_teams if provided (for MCP/API token access), otherwise look up from DB
             if token_teams is not None:
                 team_ids = token_teams
-            else:
+            elif user_email:
                 team_service = TeamManagementService(db)
                 user_teams = await team_service.get_user_teams(user_email)
                 team_ids = [team.id for team in user_teams]
+            else:
+                team_ids = []
 
             # Check if this is a public-only token (empty teams array)
             # Public-only tokens can ONLY see public resources - no owner access
@@ -1820,8 +1910,8 @@ class ToolService:
             access_conditions = [
                 DbTool.visibility == "public",
             ]
-            # Only include owner access for non-public-only tokens
-            if not is_public_only_token:
+            # Only include owner access for non-public-only tokens with user_email
+            if not is_public_only_token and user_email:
                 access_conditions.append(DbTool.owner_email == user_email)
             if team_ids:
                 access_conditions.append(and_(DbTool.team_id.in_(team_ids), DbTool.visibility.in_(["team", "public"])))
@@ -1834,7 +1924,11 @@ class ToolService:
 
         result = []
         for tool in tools:
-            result.append(self.convert_tool_to_read(tool, include_metrics=include_metrics, include_auth=False))
+            try:
+                result.append(self.convert_tool_to_read(tool, include_metrics=include_metrics, include_auth=False))
+            except (ValidationError, ValueError, KeyError, TypeError, binascii.Error) as e:
+                logger.exception(f"Failed to convert tool {getattr(tool, 'id', 'unknown')} ({getattr(tool, 'name', 'unknown')}): {e}")
+                # Continue with remaining tools instead of failing completely
 
         return result
 
@@ -1961,7 +2055,11 @@ class ToolService:
         # Convert to ToolRead objects
         result = []
         for tool in tools:
-            result.append(self.convert_tool_to_read(tool, include_metrics=False, include_auth=False))
+            try:
+                result.append(self.convert_tool_to_read(tool, include_metrics=False, include_auth=False))
+            except (ValidationError, ValueError, KeyError, TypeError, binascii.Error) as e:
+                logger.exception(f"Failed to convert tool {getattr(tool, 'id', 'unknown')} ({getattr(tool, 'name', 'unknown')}): {e}")
+                # Continue with remaining tools instead of failing completely
 
         next_cursor = None
         # Generate cursor if there are more results (cursor-based pagination)
@@ -2164,9 +2262,9 @@ class ToolService:
             )
             raise ToolError(f"Failed to delete tool: {str(e)}")
 
-    async def toggle_tool_status(self, db: Session, tool_id: str, activate: bool, reachable: bool, user_email: Optional[str] = None, skip_cache_invalidation: bool = False) -> ToolRead:
+    async def set_tool_state(self, db: Session, tool_id: str, activate: bool, reachable: bool, user_email: Optional[str] = None, skip_cache_invalidation: bool = False) -> ToolRead:
         """
-        Toggle the activation status of a tool.
+        Set the activation status of a tool.
 
         Args:
             db (Session): The SQLAlchemy database session.
@@ -2199,7 +2297,7 @@ class ToolService:
             >>> service.convert_tool_to_read = MagicMock(return_value='tool_read')
             >>> ToolRead.model_validate = MagicMock(return_value='tool_read')
             >>> import asyncio
-            >>> asyncio.run(service.toggle_tool_status(db, 'tool_id', True, True))
+            >>> asyncio.run(service.set_tool_state(db, 'tool_id', True, True))
             'tool_read'
         """
         try:
@@ -2249,10 +2347,10 @@ class ToolService:
 
                 logger.info(f"Tool: {tool.name} is {'enabled' if activate else 'disabled'}{' and accessible' if reachable else ' but inaccessible'}")
 
-                # Structured logging: Audit trail for tool status toggle
+                # Structured logging: Audit trail for tool state change
                 audit_trail.log_action(
                     user_id=user_email or "system",
-                    action="toggle_tool_status",
+                    action="set_tool_state",
                     resource_type="tool",
                     resource_id=tool.id,
                     resource_name=tool.name,
@@ -2268,11 +2366,11 @@ class ToolService:
                     db=db,
                 )
 
-                # Structured logging: Log successful tool status toggle
+                # Structured logging: Log successful tool state change
                 structured_logger.log(
                     level="INFO",
                     message=f"Tool {'activated' if activate else 'deactivated'} successfully",
-                    event_type="tool_status_toggled",
+                    event_type="tool_state_changed",
                     component="tool_service",
                     user_email=user_email,
                     team_id=tool.team_id,
@@ -2291,8 +2389,8 @@ class ToolService:
             # Structured logging: Log permission error
             structured_logger.log(
                 level="WARNING",
-                message="Tool status toggle failed due to permission error",
-                event_type="tool_toggle_permission_denied",
+                message="Tool state change failed due to permission error",
+                event_type="tool_state_change_permission_denied",
                 component="tool_service",
                 user_email=user_email,
                 resource_type="tool",
@@ -2304,11 +2402,11 @@ class ToolService:
         except Exception as e:
             db.rollback()
 
-            # Structured logging: Log generic tool status toggle failure
+            # Structured logging: Log generic tool state change failure
             structured_logger.log(
                 level="ERROR",
-                message="Tool status toggle failed",
-                event_type="tool_toggle_failed",
+                message="Tool state change failed",
+                event_type="tool_state_change_failed",
                 component="tool_service",
                 user_email=user_email,
                 resource_type="tool",
@@ -2316,7 +2414,7 @@ class ToolService:
                 error=e,
                 db=db,
             )
-            raise ToolError(f"Failed to toggle tool status: {str(e)}")
+            raise ToolError(f"Failed to set tool state: {str(e)}")
 
     async def invoke_tool(
         self,
@@ -2325,8 +2423,12 @@ class ToolService:
         arguments: Dict[str, Any],
         request_headers: Optional[Dict[str, str]] = None,
         app_user_email: Optional[str] = None,
+        user_email: Optional[str] = None,
+        token_teams: Optional[List[str]] = None,
+        server_id: Optional[str] = None,
         plugin_context_table: Optional[PluginContextTable] = None,
         plugin_global_context: Optional[GlobalContext] = None,
+        meta_data: Optional[Dict[str, Any]] = None,
     ) -> ToolResult:
         """
         Invoke a registered tool and record execution metrics.
@@ -2339,14 +2441,21 @@ class ToolService:
                 Defaults to None.
             app_user_email (Optional[str], optional): MCP Gateway user email for OAuth token retrieval.
                 Required for OAuth-protected gateways.
+            user_email (Optional[str], optional): User email for authorization checks.
+                None = unauthenticated request.
+            token_teams (Optional[List[str]], optional): Team IDs from JWT token for authorization.
+                None = unrestricted admin, [] = public-only, [...] = team-scoped.
+            server_id (Optional[str], optional): Virtual server ID for server scoping enforcement.
+                If provided, tool must be attached to this server.
             plugin_context_table: Optional plugin context table from previous hooks for cross-hook state sharing.
             plugin_global_context: Optional global context from middleware for consistency across hooks.
+            meta_data: Optional metadata dictionary for additional context (e.g., request ID).
 
         Returns:
             Tool invocation result.
 
         Raises:
-            ToolNotFoundError: If tool not found.
+            ToolNotFoundError: If tool not found or access denied.
             ToolInvocationError: If invocation fails.
             PluginViolationError: If plugin blocks tool invocation.
             PluginError: If encounters issue with plugin
@@ -2405,6 +2514,35 @@ class ToolService:
         if tool_payload.get("reachable") is False:
             raise ToolNotFoundError(f"Tool '{name}' exists but is currently offline. Please verify if it is running.")
 
+        # ═══════════════════════════════════════════════════════════════════════════
+        # SECURITY: Check tool access based on visibility and team membership
+        # This enforces the same access control rules as list_tools()
+        # ═══════════════════════════════════════════════════════════════════════════
+        if not await self._check_tool_access(db, tool_payload, user_email, token_teams):
+            # Don't reveal tool existence - return generic "not found"
+            raise ToolNotFoundError(f"Tool not found: {name}")
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # SECURITY: Enforce server scoping if server_id is provided
+        # Tool must be attached to the specified virtual server
+        # ═══════════════════════════════════════════════════════════════════════════
+        if server_id:
+            tool_id_for_check = tool_payload.get("id")
+            if not tool_id_for_check:
+                # Cannot verify server membership without tool ID - deny access
+                # This should not happen with properly cached tools, but fail safe
+                logger.warning(f"Tool '{name}' has no ID in payload, cannot verify server membership")
+                raise ToolNotFoundError(f"Tool not found: {name}")
+
+            server_match = db.execute(
+                select(server_tool_association.c.tool_id).where(
+                    server_tool_association.c.server_id == server_id,
+                    server_tool_association.c.tool_id == tool_id_for_check,
+                )
+            ).first()
+            if not server_match:
+                raise ToolNotFoundError(f"Tool not found: {name}")
+
         # Check if this is an A2A tool and route to A2A service
         tool_annotations = tool_payload.get("annotations") or {}
         tool_integration_type = tool_payload.get("integration_type")
@@ -2445,11 +2583,29 @@ class ToolService:
         gateway_name = gateway_payload.get("name") if has_gateway else None
         gateway_auth_type = gateway_payload.get("auth_type") if has_gateway else None
         gateway_auth_value = gateway_payload.get("auth_value") if has_gateway else None
+        gateway_auth_query_params = gateway_payload.get("auth_query_params") if has_gateway else None
         gateway_oauth_config = gateway_payload.get("oauth_config") if has_gateway else None
         gateway_ca_cert = gateway_payload.get("ca_certificate") if has_gateway else None
         gateway_ca_cert_sig = gateway_payload.get("ca_certificate_sig") if has_gateway else None
         gateway_passthrough = gateway_payload.get("passthrough_headers") if has_gateway else None
         gateway_id_str = gateway_payload.get("id") if has_gateway else None
+
+        # Decrypt and apply query param auth to URL if applicable
+        gateway_auth_query_params_decrypted: Optional[Dict[str, str]] = None
+        if gateway_auth_type == "query_param" and gateway_auth_query_params:
+            # Decrypt the query param values
+            gateway_auth_query_params_decrypted = {}
+            for param_key, encrypted_value in gateway_auth_query_params.items():
+                if encrypted_value:
+                    try:
+                        decrypted = decode_auth(encrypted_value)
+                        gateway_auth_query_params_decrypted[param_key] = decrypted.get(param_key, "")
+                    except Exception:  # noqa: S110 - intentionally skip failed decryptions
+                        # Silently skip params that fail decryption (may be corrupted or use old key)
+                        logger.debug(f"Failed to decrypt query param '{param_key}' for tool invocation")
+            # Apply query params to gateway URL
+            if gateway_auth_query_params_decrypted and gateway_url:
+                gateway_url = apply_query_param_auth(gateway_url, gateway_auth_query_params_decrypted)
 
         # Create Pydantic models for plugins BEFORE HTTP calls (use ORM objects while still valid)
         # This prevents lazy loading during HTTP calls
@@ -2707,15 +2863,15 @@ class ToolService:
                     def create_ssl_context(ca_certificate: str) -> ssl.SSLContext:
                         """Create an SSL context with the provided CA certificate.
 
+                        Uses caching to avoid repeated SSL context creation for the same certificate.
+
                         Args:
                             ca_certificate: CA certificate in PEM format
 
                         Returns:
                             ssl.SSLContext: Configured SSL context
                         """
-                        ctx = ssl.create_default_context()
-                        ctx.load_verify_locations(cadata=ca_certificate)
-                        return ctx
+                        return get_cached_ssl_context(ca_certificate)
 
                     def get_httpx_client_factory(
                         headers: dict[str, str] | None = None,
@@ -2786,13 +2942,15 @@ class ToolService:
                         # still logged locally for tracing within the gateway.
 
                         # Log MCP call start (using local variables)
+                        # Sanitize server_url to redact sensitive query params from logs
+                        server_url_sanitized = sanitize_url_for_logging(server_url, gateway_auth_query_params_decrypted)
                         mcp_start_time = time.time()
                         structured_logger.log(
                             level="INFO",
                             message=f"MCP tool call started: {tool_name_original}",
                             component="tool_service",
                             correlation_id=correlation_id,
-                            metadata={"event": "mcp_call_started", "tool_name": tool_name_original, "tool_id": tool_id, "server_url": server_url, "transport": "sse"},
+                            metadata={"event": "mcp_call_started", "tool_name": tool_name_original, "tool_id": tool_id, "server_url": server_url_sanitized, "transport": "sse"},
                         )
 
                         try:
@@ -2815,8 +2973,9 @@ class ToolService:
                                     transport_type=TransportType.SSE,
                                     httpx_client_factory=get_httpx_client_factory,
                                     user_identity=app_user_email,
+                                    gateway_id=gateway_id_str,
                                 ) as pooled:
-                                    tool_call_result = await pooled.session.call_tool(tool_name_original, arguments)
+                                    tool_call_result = await pooled.session.call_tool(tool_name_original, arguments, meta=meta_data)
                             else:
                                 # Non-pooled path: safe to add per-request headers
                                 if correlation_id and headers:
@@ -2825,7 +2984,7 @@ class ToolService:
                                 async with sse_client(url=server_url, headers=headers, httpx_client_factory=get_httpx_client_factory) as streams:
                                     async with ClientSession(*streams) as session:
                                         await session.initialize()
-                                        tool_call_result = await session.call_tool(tool_name_original, arguments)
+                                        tool_call_result = await session.call_tool(tool_name_original, arguments, meta=meta_data)
 
                             # Log successful MCP call
                             mcp_duration_ms = (time.time() - mcp_start_time) * 1000
@@ -2848,13 +3007,15 @@ class ToolService:
                                     root_cause = root_cause.exceptions[0]
                             # Log failed MCP call (using local variables)
                             mcp_duration_ms = (time.time() - mcp_start_time) * 1000
+                            # Sanitize error message to prevent URL secrets from leaking in logs
+                            sanitized_error = sanitize_exception_message(str(root_cause), gateway_auth_query_params_decrypted)
                             structured_logger.log(
                                 level="ERROR",
                                 message=f"MCP tool call failed: {tool_name_original}",
                                 component="tool_service",
                                 correlation_id=correlation_id,
                                 duration_ms=mcp_duration_ms,
-                                error_details={"error_type": type(root_cause).__name__, "error_message": str(root_cause)},
+                                error_details={"error_type": type(root_cause).__name__, "error_message": sanitized_error},
                                 metadata={"event": "mcp_call_failed", "tool_name": tool_name_original, "tool_id": tool_id, "transport": "sse"},
                             )
                             raise
@@ -2882,13 +3043,15 @@ class ToolService:
                         # still logged locally for tracing within the gateway.
 
                         # Log MCP call start (using local variables)
+                        # Sanitize server_url to redact sensitive query params from logs
+                        server_url_sanitized = sanitize_url_for_logging(server_url, gateway_auth_query_params_decrypted)
                         mcp_start_time = time.time()
                         structured_logger.log(
                             level="INFO",
                             message=f"MCP tool call started: {tool_name_original}",
                             component="tool_service",
                             correlation_id=correlation_id,
-                            metadata={"event": "mcp_call_started", "tool_name": tool_name_original, "tool_id": tool_id, "server_url": server_url, "transport": "streamablehttp"},
+                            metadata={"event": "mcp_call_started", "tool_name": tool_name_original, "tool_id": tool_id, "server_url": server_url_sanitized, "transport": "streamablehttp"},
                         )
 
                         try:
@@ -2911,8 +3074,9 @@ class ToolService:
                                     transport_type=TransportType.STREAMABLE_HTTP,
                                     httpx_client_factory=get_httpx_client_factory,
                                     user_identity=app_user_email,
+                                    gateway_id=gateway_id_str,
                                 ) as pooled:
-                                    tool_call_result = await pooled.session.call_tool(tool_name_original, arguments)
+                                    tool_call_result = await pooled.session.call_tool(tool_name_original, arguments, meta=meta_data)
                             else:
                                 # Non-pooled path: safe to add per-request headers
                                 if correlation_id and headers:
@@ -2921,7 +3085,7 @@ class ToolService:
                                 async with streamablehttp_client(url=server_url, headers=headers, httpx_client_factory=get_httpx_client_factory) as (read_stream, write_stream, _get_session_id):
                                     async with ClientSession(read_stream, write_stream) as session:
                                         await session.initialize()
-                                        tool_call_result = await session.call_tool(tool_name_original, arguments)
+                                        tool_call_result = await session.call_tool(tool_name_original, arguments, meta=meta_data)
 
                             # Log successful MCP call
                             mcp_duration_ms = (time.time() - mcp_start_time) * 1000
@@ -2944,13 +3108,15 @@ class ToolService:
                                     root_cause = root_cause.exceptions[0]
                             # Log failed MCP call
                             mcp_duration_ms = (time.time() - mcp_start_time) * 1000
+                            # Sanitize error message to prevent URL secrets from leaking in logs
+                            sanitized_error = sanitize_exception_message(str(root_cause), gateway_auth_query_params_decrypted)
                             structured_logger.log(
                                 level="ERROR",
                                 message=f"MCP tool call failed: {tool_name_original}",
                                 component="tool_service",
                                 correlation_id=correlation_id,
                                 duration_ms=mcp_duration_ms,
-                                error_details={"error_type": type(root_cause).__name__, "error_message": str(root_cause)},
+                                error_details={"error_type": type(root_cause).__name__, "error_message": sanitized_error},
                                 metadata={"event": "mcp_call_failed", "tool_name": tool_name_original, "tool_id": tool_id, "transport": "streamablehttp"},
                             )
                             raise
@@ -3972,13 +4138,31 @@ class ToolService:
         client = await get_http_client()
         headers = {"Content-Type": "application/json"}
 
+        # Determine the endpoint URL (may be modified for query_param auth)
+        endpoint_url = agent.endpoint_url
+
         # Add authentication if configured
         if agent.auth_type == "api_key" and agent.auth_value:
             headers["Authorization"] = f"Bearer {agent.auth_value}"
         elif agent.auth_type == "bearer" and agent.auth_value:
             headers["Authorization"] = f"Bearer {agent.auth_value}"
+        elif agent.auth_type == "query_param" and agent.auth_query_params:
+            # Handle query parameter authentication (imports at top: decode_auth, apply_query_param_auth, sanitize_url_for_logging)
+            auth_query_params_decrypted: dict[str, str] = {}
+            for param_key, encrypted_value in agent.auth_query_params.items():
+                if encrypted_value:
+                    try:
+                        decrypted = decode_auth(encrypted_value)
+                        auth_query_params_decrypted[param_key] = decrypted.get(param_key, "")
+                    except Exception:
+                        logger.debug(f"Failed to decrypt query param for key '{param_key}'")
+            if auth_query_params_decrypted:
+                endpoint_url = apply_query_param_auth(endpoint_url, auth_query_params_decrypted)
+                # Log sanitized URL to avoid credential leakage
+                sanitized_url = sanitize_url_for_logging(endpoint_url, auth_query_params_decrypted)
+                logger.debug(f"Applied query param auth to A2A agent endpoint: {sanitized_url}")
 
-        http_response = await client.post(agent.endpoint_url, json=request_data, headers=headers)
+        http_response = await client.post(endpoint_url, json=request_data, headers=headers)
 
         if http_response.status_code == 200:
             return http_response.json()

@@ -1,6 +1,73 @@
 /* global marked, DOMPurify */
 const MASKED_AUTH_VALUE = "*****";
 
+// ===================================================================
+// GLOBAL CHART.JS INSTANCE REGISTRY
+// ===================================================================
+// Centralized chart management to prevent "Canvas is already in use" errors
+window.chartRegistry = {
+    charts: new Map(),
+
+    register(id, chart) {
+        // Destroy existing chart with same ID before registering new one
+        if (this.charts.has(id)) {
+            this.destroy(id);
+        }
+        this.charts.set(id, chart);
+        console.log(`Chart registered: ${id}`);
+    },
+
+    destroy(id) {
+        const chart = this.charts.get(id);
+        if (chart) {
+            try {
+                chart.destroy();
+                console.log(`Chart destroyed: ${id}`);
+            } catch (e) {
+                console.warn(`Failed to destroy chart ${id}:`, e);
+            }
+            this.charts.delete(id);
+        }
+    },
+
+    destroyAll() {
+        console.log(`Destroying all charts (${this.charts.size} total)`);
+        this.charts.forEach((chart, id) => {
+            this.destroy(id);
+        });
+    },
+
+    destroyByPrefix(prefix) {
+        const toDestroy = [];
+        this.charts.forEach((chart, id) => {
+            if (id.startsWith(prefix)) {
+                toDestroy.push(id);
+            }
+        });
+        console.log(
+            `Destroying ${toDestroy.length} charts with prefix: ${prefix}`,
+        );
+        toDestroy.forEach((id) => this.destroy(id));
+    },
+
+    has(id) {
+        return this.charts.has(id);
+    },
+
+    get(id) {
+        return this.charts.get(id);
+    },
+
+    size() {
+        return this.charts.size;
+    },
+};
+
+// Cleanup all charts on page unload
+window.addEventListener("beforeunload", () => {
+    window.chartRegistry.destroyAll();
+});
+
 // Add three fields to passthrough section on Advanced button click
 function handleAddPassthrough() {
     const passthroughContainer = safeGetElement("passthrough-container");
@@ -123,8 +190,8 @@ document.addEventListener("DOMContentLoaded", function () {
         });
     }
 
-    // Initialize search functionality for all entity types
-    initializeSearchInputs();
+    // Initialize search functionality for all entity types (immediate, no debounce)
+    initializeSearchInputsMemoized();
     initializePasswordValidation();
     initializeAddMembersForms();
 
@@ -189,17 +256,31 @@ document.addEventListener("DOMContentLoaded", function () {
     });
 
     // Re-initialize search inputs when HTMX content loads
+    // Only re-initialize if the swap affects search-related content
     document.body.addEventListener("htmx:afterSwap", function (event) {
-        setTimeout(() => {
-            initializeSearchInputs();
-        }, 200);
-    });
+        const target = event.detail.target;
+        const relevantPanels = [
+            "catalog-panel",
+            "gateways-panel",
+            "tools-panel",
+            "resources-panel",
+            "prompts-panel",
+            "a2a-agents-panel",
+        ];
 
-    // Also listen for htmx:load event
-    document.body.addEventListener("htmx:load", function (event) {
-        setTimeout(() => {
-            initializeSearchInputs();
-        }, 200);
+        if (
+            target &&
+            relevantPanels.some(
+                (panelId) =>
+                    target.id === panelId || target.closest(`#${panelId}`),
+            )
+        ) {
+            console.log(
+                `📝 HTMX swap detected in ${target.id}, resetting search state`,
+            );
+            resetSearchInputsState();
+            initializeSearchInputsDebounced();
+        }
     });
 
     // Initialize search when switching tabs
@@ -208,9 +289,9 @@ document.addEventListener("DOMContentLoaded", function () {
             event.target.matches('[onclick*="showTab"]') ||
             event.target.closest('[onclick*="showTab"]')
         ) {
-            setTimeout(() => {
-                initializeSearchInputs();
-            }, 300);
+            console.log("🔄 Tab switch detected, resetting search state");
+            resetSearchInputsState();
+            initializeSearchInputsDebounced();
         }
     });
 });
@@ -484,6 +565,125 @@ function safeSetInnerHTML(element, htmlContent, isTrusted = false) {
 
 // ===================================================================
 // UTILITY FUNCTIONS - Define these FIRST before anything else
+
+// ===================================================================
+// MEMOIZATION UTILITY - Generic pattern for initialization functions
+// ===================================================================
+
+/**
+ * Creates a memoized version of an initialization function with debouncing.
+ * Returns an object with the memoized function and a reset function.
+ *
+ * @param {Function} fn - The initialization function to memoize
+ * @param {number} debounceMs - Debounce delay in milliseconds (default: 300)
+ * @param {string} name - Name for logging purposes
+ * @returns {Object} Object with { init, debouncedInit, reset } functions
+ *
+ * @example
+ * const { init: initSearch, reset: resetSearch } = createMemoizedInit(
+ *     initializeSearchInputs,
+ *     300,
+ *     'SearchInputs'
+ * );
+ *
+ * // Use the memoized version
+ * initSearch();
+ *
+ * // Reset when needed (e.g., tab switch)
+ * resetSearch();
+ * initSearch();
+ */
+function createMemoizedInit(fn, debounceMs = 300, name = "Init") {
+    // Closure variables (private state)
+    let initialized = false;
+    let initializing = false;
+    let debounceTimeout = null;
+
+    /**
+     * Memoized initialization function with guards and debouncing
+     */
+    const memoizedInit = function (...args) {
+        // Guard: Prevent re-initialization if already initialized
+        if (initialized) {
+            console.log(`✓ ${name} already initialized, skipping...`);
+            return Promise.resolve();
+        }
+
+        // Guard: Prevent concurrent initialization
+        if (initializing) {
+            console.log(
+                `⏳ ${name} initialization already in progress, skipping...`,
+            );
+            return Promise.resolve();
+        }
+
+        // Clear any pending debounced call
+        if (debounceTimeout) {
+            clearTimeout(debounceTimeout);
+            debounceTimeout = null;
+        }
+
+        // Mark as initializing
+        initializing = true;
+        console.log(`🔍 Initializing ${name}...`);
+
+        try {
+            // Call the actual initialization function
+            const result = fn.apply(this, args);
+
+            // Mark as initialized
+            initialized = true;
+            console.log(`✅ ${name} initialization complete`);
+
+            return Promise.resolve(result);
+        } catch (error) {
+            console.error(`❌ Error initializing ${name}:`, error);
+            // Don't mark as initialized on error, allow retry
+            return Promise.reject(error);
+        } finally {
+            initializing = false;
+        }
+    };
+
+    /**
+     * Debounced version of the memoized init function
+     */
+    const debouncedInit = function (...args) {
+        // Clear any existing timeout
+        if (debounceTimeout) {
+            clearTimeout(debounceTimeout);
+        }
+
+        // Set new timeout
+        debounceTimeout = setTimeout(() => {
+            memoizedInit.apply(this, args);
+            debounceTimeout = null;
+        }, debounceMs);
+    };
+
+    /**
+     * Reset the initialization state
+     * Call this when you need to re-initialize (e.g., after destroying elements)
+     */
+    const reset = function () {
+        // Clear any pending debounced call
+        if (debounceTimeout) {
+            clearTimeout(debounceTimeout);
+            debounceTimeout = null;
+        }
+
+        initialized = false;
+        initializing = false;
+        console.log(`🔄 ${name} state reset`);
+    };
+
+    return {
+        init: memoizedInit,
+        debouncedInit,
+        reset,
+    };
+}
+
 // ===================================================================
 
 // Check for inative items
@@ -3503,6 +3703,9 @@ async function editA2AAgent(agentId) {
             "auth-headers-fields-a2a-edit",
         );
         const authOAuthSection = safeGetElement("auth-oauth-fields-a2a-edit");
+        const authQueryParamSection = safeGetElement(
+            "auth-query_param-fields-a2a-edit",
+        );
 
         // Individual fields
         const authUsernameField = safeGetElement(
@@ -3541,6 +3744,14 @@ async function editA2AAgent(agentId) {
             "oauth-auth-code-fields-a2a-edit",
         );
 
+        // Query param fields
+        const authQueryParamKeyField = safeGetElement(
+            "auth-query-param-key-a2a-edit",
+        );
+        const authQueryParamValueField = safeGetElement(
+            "auth-query-param-value-a2a-edit",
+        );
+
         // Hide all auth sections first
         if (authBasicSection) {
             authBasicSection.style.display = "none";
@@ -3553,6 +3764,9 @@ async function editA2AAgent(agentId) {
         }
         if (authOAuthSection) {
             authOAuthSection.style.display = "none";
+        }
+        if (authQueryParamSection) {
+            authQueryParamSection.style.display = "none";
         }
 
         switch (agent.authType) {
@@ -3627,6 +3841,18 @@ async function editA2AAgent(agentId) {
                     }
                 }
                 break;
+            case "query_param":
+                if (authQueryParamSection) {
+                    authQueryParamSection.style.display = "block";
+                    if (authQueryParamKeyField) {
+                        authQueryParamKeyField.value =
+                            agent.authQueryParamKey || "";
+                    }
+                    if (authQueryParamValueField) {
+                        authQueryParamValueField.value = "*****"; // mask value
+                    }
+                }
+                break;
             case "":
             default:
                 // No auth – keep everything hidden
@@ -3686,6 +3912,7 @@ function toggleA2AAuthFields(authType) {
         "auth-bearer-fields-a2a-edit",
         "auth-headers-fields-a2a-edit",
         "auth-oauth-fields-a2a-edit",
+        "auth-query_param-fields-a2a-edit",
     ];
     sections.forEach((id) => {
         const el = document.getElementById(id);
@@ -5262,6 +5489,9 @@ async function editGateway(gatewayId) {
             "auth-headers-fields-gw-edit",
         );
         const authOAuthSection = safeGetElement("auth-oauth-fields-gw-edit");
+        const authQueryParamSection = safeGetElement(
+            "auth-query_param-fields-gw-edit",
+        );
 
         // Individual fields
         const authUsernameField = safeGetElement(
@@ -5312,6 +5542,9 @@ async function editGateway(gatewayId) {
         }
         if (authOAuthSection) {
             authOAuthSection.style.display = "none";
+        }
+        if (authQueryParamSection) {
+            authQueryParamSection.style.display = "none";
         }
 
         switch (gateway.authType) {
@@ -5425,6 +5658,35 @@ async function editGateway(gatewayId) {
                         Array.isArray(config.scopes)
                     ) {
                         oauthScopesField.value = config.scopes.join(" ");
+                    }
+                }
+                break;
+            case "query_param":
+                if (authQueryParamSection) {
+                    authQueryParamSection.style.display = "block";
+                    // Get the input fields within the section
+                    const queryParamKeyField =
+                        authQueryParamSection.querySelector(
+                            "input[name='auth_query_param_key']",
+                        );
+                    const queryParamValueField =
+                        authQueryParamSection.querySelector(
+                            "input[name='auth_query_param_value']",
+                        );
+                    if (queryParamKeyField && gateway.authQueryParamKey) {
+                        queryParamKeyField.value = gateway.authQueryParamKey;
+                    }
+                    if (queryParamValueField) {
+                        // Always show masked value for security
+                        queryParamValueField.value = MASKED_AUTH_VALUE;
+                        if (gateway.authQueryParamValueUnmasked) {
+                            queryParamValueField.dataset.isMasked = "true";
+                            queryParamValueField.dataset.realValue =
+                                gateway.authQueryParamValueUnmasked;
+                        } else {
+                            delete queryParamValueField.dataset.isMasked;
+                            delete queryParamValueField.dataset.realValue;
+                        }
                     }
                 }
                 break;
@@ -6070,6 +6332,73 @@ async function editServer(serverId) {
         const iconField = safeGetElement("edit-server-icon");
         if (iconField) {
             iconField.value = server.icon || "";
+        }
+
+        // Set OAuth 2.0 configuration fields (RFC 9728)
+        const oauthEnabledCheckbox = safeGetElement(
+            "edit-server-oauth-enabled",
+        );
+        const oauthConfigSection = safeGetElement(
+            "edit-server-oauth-config-section",
+        );
+        const oauthAuthServerField = safeGetElement(
+            "edit-server-oauth-authorization-server",
+        );
+        const oauthScopesField = safeGetElement("edit-server-oauth-scopes");
+        const oauthTokenEndpointField = safeGetElement(
+            "edit-server-oauth-token-endpoint",
+        );
+
+        if (oauthEnabledCheckbox) {
+            oauthEnabledCheckbox.checked = server.oauth_enabled || false;
+        }
+
+        // Show/hide OAuth config section based on oauth_enabled state
+        if (oauthConfigSection) {
+            if (server.oauth_enabled) {
+                oauthConfigSection.classList.remove("hidden");
+            } else {
+                oauthConfigSection.classList.add("hidden");
+            }
+        }
+
+        // Populate OAuth config fields if oauth_config exists
+        if (server.oauth_config) {
+            // Extract authorization server (may be in authorization_servers array or authorization_server string)
+            let authServer = "";
+            if (
+                server.oauth_config.authorization_servers &&
+                server.oauth_config.authorization_servers.length > 0
+            ) {
+                authServer = server.oauth_config.authorization_servers[0];
+            } else if (server.oauth_config.authorization_server) {
+                authServer = server.oauth_config.authorization_server;
+            }
+            if (oauthAuthServerField) {
+                oauthAuthServerField.value = authServer;
+            }
+
+            // Extract scopes (may be scopes_supported array or scopes array)
+            const scopes =
+                server.oauth_config.scopes_supported ||
+                server.oauth_config.scopes ||
+                [];
+            if (oauthScopesField) {
+                oauthScopesField.value = Array.isArray(scopes)
+                    ? scopes.join(" ")
+                    : scopes;
+            }
+
+            // Extract token endpoint
+            if (oauthTokenEndpointField) {
+                oauthTokenEndpointField.value =
+                    server.oauth_config.token_endpoint || "";
+            }
+        } else {
+            // Clear OAuth config fields when no config exists
+            if (oauthAuthServerField) oauthAuthServerField.value = "";
+            if (oauthScopesField) oauthScopesField.value = "";
+            if (oauthTokenEndpointField) oauthTokenEndpointField.value = "";
         }
 
         // Store server data for modal population
@@ -6859,6 +7188,23 @@ function showTab(tabName) {
             clearTimeout(tabSwitchTimeout);
         }
 
+        // Cleanup observability tab when leaving
+        const currentPanel = document.querySelector(".tab-panel:not(.hidden)");
+        if (
+            currentPanel &&
+            currentPanel.id === "observability-panel" &&
+            tabName !== "observability"
+        ) {
+            console.log("Leaving observability tab, triggering cleanup...");
+            // Destroy all observability charts
+            window.chartRegistry.destroyByPrefix("metrics-");
+            window.chartRegistry.destroyByPrefix("tools-");
+            window.chartRegistry.destroyByPrefix("prompts-");
+            window.chartRegistry.destroyByPrefix("resources-");
+            // Dispatch event so Alpine components can stop intervals and reset state
+            document.dispatchEvent(new CustomEvent("observability:leave"));
+        }
+
         // Navigation styling (immediate)
         document.querySelectorAll(".tab-panel").forEach((p) => {
             if (p) {
@@ -7129,6 +7475,10 @@ function showTab(tabName) {
                     }
                 }
 
+                // Note: Charts are already destroyed when leaving observability tab (see above),
+                // so we don't need to destroy them again on entry. The loaded partials will
+                // re-render charts on their next auto-refresh cycle or when the partial is reloaded.
+
                 if (tabName === "plugins") {
                     const pluginsPanel = safeGetElement("plugins-panel");
                     if (pluginsPanel && pluginsPanel.innerHTML.trim() === "") {
@@ -7329,6 +7679,7 @@ function handleAuthTypeSelection(
     bearerFields,
     headersFields,
     oauthFields,
+    queryParamFields,
 ) {
     if (!basicFields || !bearerFields || !headersFields) {
         console.warn("Auth field elements not found");
@@ -7345,6 +7696,11 @@ function handleAuthTypeSelection(
     // Hide OAuth fields if they exist
     if (oauthFields) {
         oauthFields.style.display = "none";
+    }
+
+    // Hide query param fields if they exist
+    if (queryParamFields) {
+        queryParamFields.style.display = "none";
     }
 
     // Show relevant field based on selection
@@ -7377,6 +7733,11 @@ function handleAuthTypeSelection(
         case "oauth":
             if (oauthFields) {
                 oauthFields.style.display = "block";
+            }
+            break;
+        case "query_param":
+            if (queryParamFields) {
+                queryParamFields.style.display = "block";
             }
             break;
         default:
@@ -10139,135 +10500,6 @@ document.addEventListener("DOMContentLoaded", function () {
 // INACTIVE ITEMS HANDLING
 // ===================================================================
 
-function toggleInactiveItems(type) {
-    const checkbox = safeGetElement(`show-inactive-${type}`);
-    if (!checkbox) {
-        return;
-    }
-
-    // Update URL in address bar (no navigation) so state is reflected
-    try {
-        const urlObj = new URL(window.location);
-        if (checkbox.checked) {
-            urlObj.searchParams.set("include_inactive", "true");
-        } else {
-            urlObj.searchParams.delete("include_inactive");
-        }
-        // Use replaceState to avoid adding history entries for every toggle
-        window.history.replaceState({}, document.title, urlObj.toString());
-    } catch (e) {
-        // ignore (shouldn't happen)
-    }
-
-    // For servers (catalog), use loadServers function if available, otherwise reload page
-    if (type === "servers") {
-        if (typeof window.loadServers === "function") {
-            window.loadServers();
-            return;
-        }
-        // Fallback to page reload
-        const fallbackUrl = new URL(window.location);
-        if (checkbox.checked) {
-            fallbackUrl.searchParams.set("include_inactive", "true");
-        } else {
-            fallbackUrl.searchParams.delete("include_inactive");
-        }
-        window.location = fallbackUrl;
-        return;
-    }
-
-    // Try to find the HTMX container that loads this entity's partial
-    // Prefer an element with hx-get containing the admin partial endpoint
-    const selector = `[hx-get*="/admin/${type}/partial"]`;
-    let container = document.querySelector(selector);
-
-    // Fallback to conventional id naming used in templates
-    if (!container) {
-        const fallbackId =
-            type === "tools" ? "tools-table" : `${type}-list-container`;
-        container = document.getElementById(fallbackId);
-    }
-
-    if (!container) {
-        // If we couldn't find a container, fallback to full-page reload
-        const fallbackUrl = new URL(window.location);
-        if (checkbox.checked) {
-            fallbackUrl.searchParams.set("include_inactive", "true");
-        } else {
-            fallbackUrl.searchParams.delete("include_inactive");
-        }
-        window.location = fallbackUrl;
-        return;
-    }
-
-    // Build request URL based on the hx-get attribute or container id
-    const base =
-        container.getAttribute("hx-get") ||
-        container.getAttribute("data-hx-get") ||
-        "";
-    let reqUrl;
-    try {
-        if (base) {
-            // base may already include query params; construct URL and set include_inactive/page
-            reqUrl = new URL(base, window.location.origin);
-            // reset to page 1 when toggling
-            reqUrl.searchParams.set("page", "1");
-            if (checkbox.checked) {
-                reqUrl.searchParams.set("include_inactive", "true");
-            } else {
-                reqUrl.searchParams.delete("include_inactive");
-            }
-        } else {
-            // construct from known pattern
-            const root = window.ROOT_PATH || "";
-            reqUrl = new URL(
-                `${root}/admin/${type}/partial?page=1&per_page=50`,
-                window.location.origin,
-            );
-            if (checkbox.checked) {
-                reqUrl.searchParams.set("include_inactive", "true");
-            }
-        }
-    } catch (e) {
-        // fallback to full reload
-        const fallbackUrl2 = new URL(window.location);
-        if (checkbox.checked) {
-            fallbackUrl2.searchParams.set("include_inactive", "true");
-        } else {
-            fallbackUrl2.searchParams.delete("include_inactive");
-        }
-        window.location = fallbackUrl2;
-        return;
-    }
-
-    // Determine indicator selector
-    const indicator =
-        container.getAttribute("hx-indicator") || `#${type}-loading`;
-
-    // Use HTMX to reload only the container (outerHTML swap)
-    if (window.htmx && typeof window.htmx.ajax === "function") {
-        try {
-            window.htmx.ajax("GET", reqUrl.toString(), {
-                target: container,
-                swap: "outerHTML",
-                indicator,
-            });
-            return;
-        } catch (e) {
-            // fall through to full reload
-        }
-    }
-
-    // Last resort: reload page with param
-    const finalUrl = new URL(window.location);
-    if (checkbox.checked) {
-        finalUrl.searchParams.set("include_inactive", "true");
-    } else {
-        finalUrl.searchParams.delete("include_inactive");
-    }
-    window.location = finalUrl;
-}
-
 function handleToggleSubmit(event, type) {
     event.preventDefault();
 
@@ -10934,7 +11166,11 @@ async function enrichTool(toolId) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-    const toolBody = document.getElementById("toolBody");
+    // Use #tool-ops-main-content-wrapper as the event delegation target because
+    // #toolBody gets replaced by HTMX swaps. The wrapper survives swaps.
+    const toolOpsWrapper = document.getElementById(
+        "tool-ops-main-content-wrapper",
+    );
     const selectedList = document.getElementById("selectedList");
     const selectedCount = document.getElementById("selectedCount");
     const searchBox = document.getElementById("searchBox");
@@ -10942,9 +11178,9 @@ document.addEventListener("DOMContentLoaded", () => {
     let selectedTools = [];
     let selectedToolIds = [];
 
-    if (toolBody !== null) {
-        // ✅ Use event delegation for dynamically added checkboxes
-        toolBody.addEventListener("change", (event) => {
+    if (toolOpsWrapper !== null) {
+        // ✅ Use event delegation on wrapper (survives HTMX swaps)
+        toolOpsWrapper.addEventListener("change", (event) => {
             const cb = event.target;
             if (cb.classList.contains("tool-checkbox")) {
                 const toolName = cb.getAttribute("data-tool");
@@ -11001,10 +11237,14 @@ document.addEventListener("DOMContentLoaded", () => {
     if (searchBox !== null) {
         searchBox.addEventListener("input", () => {
             const query = searchBox.value.trim().toLowerCase();
-            document.querySelectorAll("#toolBody tr").forEach((row) => {
-                const name = row.dataset.name;
-                row.style.display = name.includes(query) ? "" : "none";
-            });
+            // Search within #toolBody (which is inside #tool-ops-main-content-wrapper)
+            document
+                .querySelectorAll("#tool-ops-main-content-wrapper #toolBody tr")
+                .forEach((row) => {
+                    const name = row.dataset.name;
+                    row.style.display =
+                        name && name.includes(query) ? "" : "none";
+                });
         });
     }
     // Generic API call for Enrich/Validate
@@ -15637,6 +15877,7 @@ function setupAuthenticationToggles() {
             basicId: "auth-basic-fields-gw",
             bearerId: "auth-bearer-fields-gw",
             headersId: "auth-headers-fields-gw",
+            queryParamId: "auth-query_param-fields-gw",
         },
 
         // A2A Add Form auth fields
@@ -15646,6 +15887,7 @@ function setupAuthenticationToggles() {
             basicId: "auth-basic-fields-a2a",
             bearerId: "auth-bearer-fields-a2a",
             headersId: "auth-headers-fields-a2a",
+            queryParamId: "auth-query_param-fields-a2a",
         },
 
         // Gateway Edit Form auth fields
@@ -15656,6 +15898,7 @@ function setupAuthenticationToggles() {
             bearerId: "auth-bearer-fields-gw-edit",
             headersId: "auth-headers-fields-gw-edit",
             oauthId: "auth-oauth-fields-gw-edit",
+            queryParamId: "auth-query_param-fields-gw-edit",
         },
 
         // A2A Edit Form auth fields
@@ -15666,6 +15909,7 @@ function setupAuthenticationToggles() {
             bearerId: "auth-bearer-fields-a2a-edit",
             headersId: "auth-headers-fields-a2a-edit",
             oauthId: "auth-oauth-fields-a2a-edit",
+            queryParamId: "auth-query_param-fields-a2a-edit",
         },
 
         {
@@ -15683,11 +15927,19 @@ function setupAuthenticationToggles() {
                 const basicFields = safeGetElement(handler.basicId);
                 const bearerFields = safeGetElement(handler.bearerId);
                 const headersFields = safeGetElement(handler.headersId);
+                const oauthFields = handler.oauthId
+                    ? safeGetElement(handler.oauthId)
+                    : null;
+                const queryParamFields = handler.queryParamId
+                    ? safeGetElement(handler.queryParamId)
+                    : null;
                 handleAuthTypeSelection(
                     this.value,
                     basicFields,
                     bearerFields,
                     headersFields,
+                    oauthFields,
+                    queryParamFields,
                 );
             });
         }
@@ -16074,12 +16326,12 @@ function filterServerTable(searchText) {
         rows.forEach((row) => {
             let textContent = "";
 
-            // Get text from all searchable cells (exclude only Actions column)
-            // Table columns: Icon(0), S.No.(1), UUID(2), Name(3), Description(4), Tools(5), Resources(6), Prompts(7), Tags(8), Owner(9), Team(10), Visibility(11), Actions(12)
+            // Get text from all searchable cells (exclude Actions, Icon, and S.No. columns)
+            // Table columns: Actions(0), Icon(1), S.No.(2), UUID(3), Name(4), Description(5), Tools(6), Resources(7), Prompts(8), Tags(9), Owner(10), Team(11), Visibility(12)
             const cells = row.querySelectorAll("td");
-            // Search all columns except Icon and Actions columns
+            // Search all columns except Actions(0), Icon(1), and S.No.(2) columns
             const searchableColumnIndices = [];
-            for (let i = 1; i < cells.length - 1; i++) {
+            for (let i = 3; i < cells.length; i++) {
                 searchableColumnIndices.push(i);
             }
 
@@ -16093,9 +16345,7 @@ function filterServerTable(searchText) {
                 }
             });
 
-            const isMatch =
-                search === "" || textContent.toLowerCase().includes(search);
-            if (isMatch) {
+            if (search === "" || textContent.toLowerCase().includes(search)) {
                 row.style.display = "";
             } else {
                 row.style.display = "none";
@@ -16126,10 +16376,10 @@ function filterToolsTable(searchText) {
         rows.forEach((row) => {
             let textContent = "";
 
-            // Get text from searchable cells (exclude S.No. and Actions columns)
-            // Tools columns: S.No.(0), Gateway Name(1), Name(2), URL(3), Type(4), Request Type(5), Description(6), Annotations(7), Tags(8), Owner(9), Team(10), Visibility(11), Status(12), Actions(13)
+            // Get text from searchable cells (exclude Actions and S.No. columns)
+            // Tools columns: Actions(0), S.No.(1), Source(2), Name(3), RequestType(4), Description(5), Annotations(6), Tags(7), Owner(8), Team(9), Status(10)
             const cells = row.querySelectorAll("td");
-            const searchableColumns = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]; // Exclude S.No. and Actions
+            const searchableColumns = [2, 3, 4, 5, 6, 7, 8, 9, 10]; // Exclude Actions(0) and S.No.(1)
 
             searchableColumns.forEach((index) => {
                 if (cells[index]) {
@@ -16172,9 +16422,9 @@ function filterResourcesTable(searchText) {
             let textContent = "";
 
             // Get text from searchable cells (exclude Actions column)
-            // Resources columns: ID(0), URI(1), Name(2), Description(3), MIME Type(4), Tags(5), Owner(6), Team(7), Visibility(8), Status(9), Actions(10)
+            // Resources columns: Actions(0), Source(1), Name(2), Description(3), Tags(4), Owner(5), Team(6), Status(7)
             const cells = row.querySelectorAll("td");
-            const searchableColumns = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]; // All except Actions
+            const searchableColumns = [1, 2, 3, 4, 5, 6, 7]; // All except Actions(0)
 
             searchableColumns.forEach((index) => {
                 if (cells[index]) {
@@ -16210,10 +16460,10 @@ function filterPromptsTable(searchText) {
         rows.forEach((row) => {
             let textContent = "";
 
-            // Get text from searchable cells (exclude Actions column)
-            // Prompts columns: S.No.(0), Name(1), Description(2), Tags(3), Owner(4), Team(5), Visibility(6), Status(7), Actions(8)
+            // Get text from searchable cells (exclude Actions and S.No. columns)
+            // Prompts columns: Actions(0), S.No.(1), GatewayName(2), Name(3), Description(4), Tags(5), Owner(6), Team(7), Status(8)
             const cells = row.querySelectorAll("td");
-            const searchableColumns = [0, 1, 2, 3, 4, 5, 6, 7]; // All except Actions
+            const searchableColumns = [2, 3, 4, 5, 6, 7, 8]; // All except Actions(0) and S.No.(1)
 
             searchableColumns.forEach((index) => {
                 if (cells[index]) {
@@ -16256,10 +16506,10 @@ function filterA2AAgentsTable(searchText) {
         rows.forEach((row) => {
             let textContent = "";
 
-            // Get text from searchable cells (exclude ID and Actions columns)
-            // A2A Agents columns: ID(0), Name(1), Description(2), Endpoint(3), Tags(4), Type(5), Status(6), Reachability(7), Owner(8), Team(9), Visibility(10), Actions(11)
+            // Get text from searchable cells (exclude Actions and ID columns)
+            // A2A Agents columns: Actions(0), ID(1), Name(2), Description(3), Endpoint(4), Tags(5), Type(6), Status(7), Reachability(8), Owner(9), Team(10), Visibility(11)
             const cells = row.querySelectorAll("td");
-            const searchableColumns = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]; // Exclude ID and Actions
+            const searchableColumns = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]; // Exclude Actions(0) and ID(1)
 
             searchableColumns.forEach((index) => {
                 if (cells[index]) {
@@ -16358,9 +16608,10 @@ function filterGatewaysTable(searchText) {
                 return;
             }
 
-            // Combine text from all cells except the last one (Actions column)
+            // Combine text from all cells except Actions(0) and S.No.(1) columns
+            // Gateways columns: Actions(0), S.No.(1), Name(2), URL(3), Tags(4), Status(5), LastSeen(6), Owner(7), Team(8), Visibility(9)
             let searchContent = "";
-            for (let i = 0; i < cells.length - 1; i++) {
+            for (let i = 2; i < cells.length; i++) {
                 if (cells[i]) {
                     const cellText = cells[i].textContent.trim();
                     searchContent += " " + cellText;
@@ -16368,19 +16619,28 @@ function filterGatewaysTable(searchText) {
             }
 
             const fullText = searchContent.trim().toLowerCase();
-            const shouldShow = search === "" || fullText.includes(search);
+            const matchesSearch = search === "" || fullText.includes(search);
+
+            // Check if row should be visible based on inactive filter
+            const checkbox = document.getElementById("show-inactive-gateways");
+            const showInactive = checkbox ? checkbox.checked : true;
+            const isEnabled = row.getAttribute("data-enabled") === "true";
+            const matchesFilter = showInactive || isEnabled;
+
+            // Only show row if it matches BOTH search AND filter
+            const shouldShow = matchesSearch && matchesFilter;
 
             // Debug first few rows
             if (index < 3) {
                 console.log(
-                    `Row ${index + 1}: "${fullText.substring(0, 50)}..." -> Match: ${shouldShow}`,
+                    `Row ${index + 1}: "${fullText.substring(0, 50)}..." -> Search: ${matchesSearch}, Filter: ${matchesFilter}, Show: ${shouldShow}`,
                 );
             }
 
             // Show/hide the row
             if (shouldShow) {
-                row.style.display = "";
-                row.style.visibility = "visible";
+                row.style.removeProperty("display");
+                row.style.removeProperty("visibility");
                 visibleCount++;
             } else {
                 row.style.display = "none";
@@ -16456,8 +16716,8 @@ window.simpleGatewaySearch = function (searchTerm) {
                     const cells = row.querySelectorAll("td");
                     let rowText = "";
 
-                    // Get text from all cells except last (Actions)
-                    for (let i = 0; i < cells.length - 1; i++) {
+                    // Get text from all cells except Actions(0) and S.No.(1)
+                    for (let i = 2; i < cells.length; i++) {
                         rowText += " " + cells[i].textContent.trim();
                     }
 
@@ -16558,8 +16818,9 @@ window.clearSearch = clearSearch;
 function initializeSearchInputs() {
     console.log("🔍 Initializing search inputs...");
 
-    // Remove existing event listeners to prevent duplicates
-    const searchInputs = [
+    // Clone inputs to remove existing event listeners before re-adding.
+    // This prevents duplicate listeners when re-initializing after reset.
+    const searchInputIds = [
         "catalog-search-input",
         "gateways-search-input",
         "tools-search-input",
@@ -16568,16 +16829,13 @@ function initializeSearchInputs() {
         "a2a-agents-search-input",
     ];
 
-    searchInputs.forEach((inputId) => {
+    searchInputIds.forEach((inputId) => {
         const input = document.getElementById(inputId);
         if (input) {
-            // Clone the input to remove all event listeners, then replace it
             const newInput = input.cloneNode(true);
             input.parentNode.replaceChild(newInput, input);
         }
     });
-
-    // Get fresh references to all search inputs after cloning
 
     // Virtual Servers search
     const catalogSearchInput = document.getElementById("catalog-search-input");
@@ -16586,6 +16844,11 @@ function initializeSearchInputs() {
             filterServerTable(this.value);
         });
         console.log("✅ Virtual Servers search initialized");
+        // Reapply current search term if any (preserves search after HTMX swap)
+        const currentSearch = catalogSearchInput.value || "";
+        if (currentSearch) {
+            filterServerTable(currentSearch);
+        }
     }
 
     // MCP Servers (Gateways) search
@@ -16616,8 +16879,11 @@ function initializeSearchInputs() {
 
         console.log("✅ MCP Servers search events attached");
 
-        // Test the function works
-        filterGatewaysTable("");
+        // Reapply current search term if any (preserves search after HTMX swap)
+        const currentSearch = gatewaysSearchInput.value || "";
+        if (currentSearch) {
+            filterGatewaysTable(currentSearch);
+        }
     } else {
         console.error("❌ MCP Servers search input not found!");
 
@@ -16674,6 +16940,16 @@ function initializeSearchInputs() {
     }
 }
 
+/**
+ * Create memoized version of search inputs initialization
+ * This prevents repeated initialization and provides explicit reset capability
+ */
+const {
+    init: initializeSearchInputsMemoized,
+    debouncedInit: initializeSearchInputsDebounced,
+    reset: resetSearchInputsState,
+} = createMemoizedInit(initializeSearchInputs, 300, "SearchInputs");
+
 function handleAuthTypeChange() {
     const authType = this.value;
 
@@ -16687,15 +16963,22 @@ function handleAuthTypeChange() {
     const bearerFields = safeGetElement(`auth-bearer-fields-${prefix}`);
     const headersFields = safeGetElement(`auth-headers-fields-${prefix}`);
     const oauthFields = safeGetElement(`auth-oauth-fields-${prefix}`);
+    const queryParamFields = safeGetElement(
+        `auth-query_param-fields-${prefix}`,
+    );
 
     // Hide all auth sections first
-    [basicFields, bearerFields, headersFields, oauthFields].forEach(
-        (section) => {
-            if (section) {
-                section.style.display = "none";
-            }
-        },
-    );
+    [
+        basicFields,
+        bearerFields,
+        headersFields,
+        oauthFields,
+        queryParamFields,
+    ].forEach((section) => {
+        if (section) {
+            section.style.display = "none";
+        }
+    });
 
     // Show the appropriate section
     switch (authType) {
@@ -16717,6 +17000,11 @@ function handleAuthTypeChange() {
         case "oauth":
             if (oauthFields) {
                 oauthFields.style.display = "block";
+            }
+            break;
+        case "query_param":
+            if (queryParamFields) {
+                queryParamFields.style.display = "block";
             }
             break;
         default:
@@ -16988,22 +17276,55 @@ function initializeTabState() {
         }, 100);
     }
 
-    // Set checkbox states based on URL parameter
+    // Set checkbox states based on URL parameters (namespaced per table, with legacy fallback)
     const urlParams = new URLSearchParams(window.location.search);
-    const includeInactive = urlParams.get("include_inactive") === "true";
+    const legacyIncludeInactive = urlParams.get("include_inactive") === "true";
 
-    const checkboxes = [
-        "show-inactive-tools",
-        "show-inactive-resources",
-        "show-inactive-prompts",
-        "show-inactive-gateways",
-        "show-inactive-servers",
-    ];
-    checkboxes.forEach((id) => {
+    // Map checkbox IDs to their table names for namespaced URL params
+    const checkboxTableMap = {
+        "show-inactive-tools": "tools",
+        "show-inactive-resources": "resources",
+        "show-inactive-prompts": "prompts",
+        "show-inactive-gateways": "gateways",
+        "show-inactive-servers": "servers",
+        "show-inactive-a2a-agents": "agents",
+        "show-inactive-tools-toolops": "toolops",
+    };
+    Object.entries(checkboxTableMap).forEach(([id, tableName]) => {
         const checkbox = safeGetElement(id);
         if (checkbox) {
-            checkbox.checked = includeInactive;
+            // Prefer namespaced param, fall back to legacy for backwards compatibility
+            const namespacedValue = urlParams.get(tableName + "_inactive");
+            if (namespacedValue !== null) {
+                checkbox.checked = namespacedValue === "true";
+            } else {
+                checkbox.checked = legacyIncludeInactive;
+            }
         }
+    });
+
+    // Note: URL state persistence for show-inactive toggles is now handled by
+    // updateInactiveUrlState() in admin.html via @change handlers on checkboxes.
+    // The handlers write namespaced params (e.g., servers_inactive, tools_inactive).
+
+    // Disable toggle until its target exists (prevents race with initial HTMX load)
+    document.querySelectorAll(".show-inactive-toggle").forEach((checkbox) => {
+        const targetSelector = checkbox.getAttribute("hx-target");
+        if (targetSelector && !document.querySelector(targetSelector)) {
+            checkbox.disabled = true;
+        }
+    });
+
+    // Enable toggles after HTMX swaps complete
+    document.body.addEventListener("htmx:afterSettle", (event) => {
+        document
+            .querySelectorAll(".show-inactive-toggle[disabled]")
+            .forEach((checkbox) => {
+                const targetSelector = checkbox.getAttribute("hx-target");
+                if (targetSelector && document.querySelector(targetSelector)) {
+                    checkbox.disabled = false;
+                }
+            });
     });
 }
 
@@ -17031,7 +17352,6 @@ async function loadServers() {
     window.location.href = url.toString();
 }
 
-window.toggleInactiveItems = toggleInactiveItems;
 window.loadServers = loadServers;
 window.handleToggleSubmit = handleToggleSubmit;
 window.handleSubmitWithConfirmation = handleSubmitWithConfirmation;
@@ -20580,6 +20900,10 @@ function resetTeamCreateForm() {
     if (form) {
         form.reset();
     }
+    const errorEl = document.getElementById("create-team-error");
+    if (errorEl) {
+        errorEl.innerHTML = "";
+    }
 }
 
 // Normalize team ID from element IDs like "add-members-form-<id>"
@@ -21157,14 +21481,30 @@ function handleAdminTeamAction(event) {
         if (detail.refreshUnifiedTeamsList && window.htmx) {
             const unifiedList = document.getElementById("unified-teams-list");
             if (unifiedList) {
-                window.htmx.ajax(
-                    "GET",
-                    `${window.ROOT_PATH || ""}/admin/teams?unified=true`,
-                    {
-                        target: "#unified-teams-list",
-                        swap: "innerHTML",
-                    },
-                );
+                // Preserve current pagination/filter state on refresh
+                const params = new URLSearchParams();
+                params.set("page", "1"); // Reset to first page on action
+                if (typeof getTeamsPerPage === "function") {
+                    params.set("per_page", getTeamsPerPage().toString());
+                }
+                // Preserve search query from input field
+                const searchInput = document.getElementById("team-search");
+                if (searchInput && searchInput.value.trim()) {
+                    params.set("q", searchInput.value.trim());
+                }
+                // Preserve relationship filter
+                if (
+                    typeof currentTeamRelationshipFilter !== "undefined" &&
+                    currentTeamRelationshipFilter &&
+                    currentTeamRelationshipFilter !== "all"
+                ) {
+                    params.set("relationship", currentTeamRelationshipFilter);
+                }
+                const url = `${window.ROOT_PATH || ""}/admin/teams/partial?${params.toString()}`;
+                window.htmx.ajax("GET", url, {
+                    target: "#unified-teams-list",
+                    swap: "innerHTML",
+                });
             }
         }
         if (detail.refreshTeamMembers && detail.teamId) {
@@ -28225,7 +28565,7 @@ function generateStatusBadgeHtml(enabled, reachable, typeLabel) {
  */
 function updateEntityActionButtons(cell, type, id, isEnabled) {
     // We look for the form that toggles activation inside the cell
-    const form = cell.querySelector('form[action*="/toggle"]');
+    const form = cell.querySelector('form[action*="/state"]');
     if (!form) {
         return;
     }
@@ -29709,7 +30049,7 @@ async function deleteLLMProvider(providerId, providerName) {
 async function toggleLLMProvider(providerId) {
     try {
         const response = await fetch(
-            `${window.ROOT_PATH}/llm/providers/${providerId}/toggle`,
+            `${window.ROOT_PATH}/llm/providers/${providerId}/state`,
             {
                 method: "POST",
                 headers: {
@@ -30092,7 +30432,7 @@ async function deleteLLMModel(modelId, modelName) {
 async function toggleLLMModel(modelId) {
     try {
         const response = await fetch(
-            `${window.ROOT_PATH}/llm/models/${modelId}/toggle`,
+            `${window.ROOT_PATH}/llm/models/${modelId}/state`,
             {
                 method: "POST",
                 headers: {
@@ -30590,3 +30930,289 @@ async function serverSideUserSearch(teamId, searchTerm) {
 }
 
 window.serverSideUserSearch = serverSideUserSearch;
+
+// ============================================================================ //
+//                         TEAM SEARCH AND FILTER FUNCTIONS                      //
+// ============================================================================ //
+
+/**
+ * Debounce timer for team search
+ */
+let teamSearchDebounceTimer = null;
+
+/**
+ * Current relationship filter state
+ */
+let currentTeamRelationshipFilter = "all";
+
+/**
+ * Perform server-side search for teams and update the teams list
+ * @param {string} searchTerm - The search query
+ */
+function serverSideTeamSearch(searchTerm) {
+    // Debounce the search to avoid excessive API calls
+    if (teamSearchDebounceTimer) {
+        clearTimeout(teamSearchDebounceTimer);
+    }
+
+    teamSearchDebounceTimer = setTimeout(() => {
+        performTeamSearch(searchTerm);
+    }, 300);
+}
+
+/**
+ * Default per_page for teams list
+ */
+const DEFAULT_TEAMS_PER_PAGE = 10;
+
+/**
+ * Get current per_page value from pagination controls or use default
+ */
+function getTeamsPerPage() {
+    // Try to get from pagination controls select element
+    const paginationControls = document.getElementById(
+        "teams-pagination-controls",
+    );
+    if (paginationControls) {
+        const select = paginationControls.querySelector("select");
+        if (select && select.value) {
+            return parseInt(select.value, 10) || DEFAULT_TEAMS_PER_PAGE;
+        }
+    }
+    return DEFAULT_TEAMS_PER_PAGE;
+}
+
+/**
+ * Actually perform the team search after debounce
+ * @param {string} searchTerm - The search query
+ */
+async function performTeamSearch(searchTerm) {
+    const container = document.getElementById("unified-teams-list");
+    const loadingIndicator = document.getElementById("teams-loading");
+
+    if (!container) {
+        console.error("unified-teams-list container not found");
+        return;
+    }
+
+    // Show loading state
+    if (loadingIndicator) {
+        loadingIndicator.style.display = "block";
+    }
+
+    // Build URL with search query and current relationship filter
+    const params = new URLSearchParams();
+    params.set("page", "1");
+    params.set("per_page", getTeamsPerPage().toString());
+
+    if (searchTerm && searchTerm.trim() !== "") {
+        params.set("q", searchTerm.trim());
+    }
+
+    if (
+        currentTeamRelationshipFilter &&
+        currentTeamRelationshipFilter !== "all"
+    ) {
+        params.set("relationship", currentTeamRelationshipFilter);
+    }
+
+    const url = `${window.ROOT_PATH || ""}/admin/teams/partial?${params.toString()}`;
+
+    console.log(`[Team Search] Searching teams with URL: ${url}`);
+
+    try {
+        // Use HTMX to load the results
+        if (window.htmx) {
+            // HTMX handles the indicator automatically via the indicator option
+            // Don't manually hide it - HTMX will hide it when request completes
+            window.htmx.ajax("GET", url, {
+                target: "#unified-teams-list",
+                swap: "innerHTML",
+                indicator: "#teams-loading",
+            });
+        } else {
+            // Fallback to fetch if HTMX is not available
+            const response = await fetch(url);
+            if (response.ok) {
+                const html = await response.text();
+                container.innerHTML = html;
+            } else {
+                container.innerHTML =
+                    '<div class="text-center py-4 text-red-600">Failed to load teams</div>';
+            }
+            // Only hide indicator in fetch fallback path (HTMX handles its own)
+            if (loadingIndicator) {
+                loadingIndicator.style.display = "none";
+            }
+        }
+    } catch (error) {
+        console.error("Error searching teams:", error);
+        container.innerHTML =
+            '<div class="text-center py-4 text-red-600">Error searching teams</div>';
+        // Hide indicator on error in fallback path
+        if (loadingIndicator) {
+            loadingIndicator.style.display = "none";
+        }
+    }
+}
+
+/**
+ * Filter teams by relationship (owner, member, public, all)
+ * @param {string} filter - The relationship filter value
+ */
+function filterByRelationship(filter) {
+    // Update button states
+    const filterButtons = document.querySelectorAll(".filter-btn");
+    filterButtons.forEach((btn) => {
+        if (btn.getAttribute("data-filter") === filter) {
+            btn.classList.add(
+                "active",
+                "bg-indigo-100",
+                "dark:bg-indigo-900",
+                "text-indigo-700",
+                "dark:text-indigo-300",
+                "border-indigo-300",
+                "dark:border-indigo-600",
+            );
+            btn.classList.remove(
+                "bg-white",
+                "dark:bg-gray-700",
+                "text-gray-700",
+                "dark:text-gray-300",
+            );
+        } else {
+            btn.classList.remove(
+                "active",
+                "bg-indigo-100",
+                "dark:bg-indigo-900",
+                "text-indigo-700",
+                "dark:text-indigo-300",
+                "border-indigo-300",
+                "dark:border-indigo-600",
+            );
+            btn.classList.add(
+                "bg-white",
+                "dark:bg-gray-700",
+                "text-gray-700",
+                "dark:text-gray-300",
+            );
+        }
+    });
+
+    // Update current filter state
+    currentTeamRelationshipFilter = filter;
+
+    // Get current search query
+    const searchInput = document.getElementById("team-search");
+    const searchQuery = searchInput ? searchInput.value.trim() : "";
+
+    // Perform search with new filter
+    performTeamSearch(searchQuery);
+}
+
+/**
+ * Legacy filterTeams function - redirects to serverSideTeamSearch
+ * @param {string} searchValue - The search query
+ */
+function filterTeams(searchValue) {
+    serverSideTeamSearch(searchValue);
+}
+
+// ============================================================================ //
+//                    TEAM SELECTOR DROPDOWN FUNCTIONS                           //
+// ============================================================================ //
+
+/**
+ * Debounce timer for team selector search
+ */
+let teamSelectorSearchDebounceTimer = null;
+
+/**
+ * Search teams in the team selector dropdown
+ * @param {string} searchTerm - The search query
+ */
+function searchTeamSelector(searchTerm) {
+    // Debounce the search
+    if (teamSelectorSearchDebounceTimer) {
+        clearTimeout(teamSelectorSearchDebounceTimer);
+    }
+
+    teamSelectorSearchDebounceTimer = setTimeout(() => {
+        performTeamSelectorSearch(searchTerm);
+    }, 300);
+}
+
+/**
+ * Perform the team selector search
+ * @param {string} searchTerm - The search query
+ */
+function performTeamSelectorSearch(searchTerm) {
+    const container = document.getElementById("team-selector-items");
+    if (!container) {
+        console.error("team-selector-items container not found");
+        return;
+    }
+
+    // Build URL
+    const params = new URLSearchParams();
+    params.set("page", "1");
+    params.set("per_page", "20");
+    params.set("render", "selector");
+
+    if (searchTerm && searchTerm.trim() !== "") {
+        params.set("q", searchTerm.trim());
+    }
+
+    const url = `${window.ROOT_PATH || ""}/admin/teams/partial?${params.toString()}`;
+
+    // Use HTMX to load results
+    if (window.htmx) {
+        window.htmx.ajax("GET", url, {
+            target: "#team-selector-items",
+            swap: "innerHTML",
+        });
+    }
+}
+
+/**
+ * Select a team from the team selector dropdown
+ * @param {HTMLElement} button - The button element that was clicked
+ */
+function selectTeamFromSelector(button) {
+    const teamId = button.dataset.teamId;
+    const teamName = button.dataset.teamName;
+    const isPersonal = button.dataset.teamIsPersonal === "true";
+
+    // Update the Alpine.js component state
+    const selectorContainer = button.closest("[x-data]");
+    if (selectorContainer && selectorContainer.__x) {
+        const alpineData = selectorContainer.__x.$data;
+        alpineData.selectedTeam = teamId;
+        alpineData.selectedTeamName = (isPersonal ? "👤 " : "🏢 ") + teamName;
+        alpineData.open = false;
+    }
+
+    // Clear the search input
+    const searchInput = document.getElementById("team-selector-search");
+    if (searchInput) {
+        searchInput.value = "";
+    }
+
+    // Reset the loaded flag so next open reloads the list
+    const itemsContainer = document.getElementById("team-selector-items");
+    if (itemsContainer) {
+        delete itemsContainer.dataset.loaded;
+    }
+
+    // Call the existing updateTeamContext function (defined in admin.html)
+    if (typeof window.updateTeamContext === "function") {
+        window.updateTeamContext(teamId);
+    }
+}
+
+// Make team functions globally available
+window.serverSideTeamSearch = serverSideTeamSearch;
+window.filterByRelationship = filterByRelationship;
+window.filterTeams = filterTeams;
+window.searchTeamSelector = searchTeamSelector;
+window.selectTeamFromSelector = selectTeamFromSelector;

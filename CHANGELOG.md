@@ -8,12 +8,53 @@
 
 ### Added
 
+#### **🛑 Gateway-Orchestrated Cancellation of Tool Runs** ([#1983](https://github.com/IBM/mcp-context-forge/issues/1983))
+* **Configurable feature** - Control via `MCPGATEWAY_TOOL_CANCELLATION_ENABLED` (default: `true`)
+  - Set to `false` to disable cancellation tracking and endpoints
+  - Zero overhead when disabled - no registration, no callbacks, no endpoints
+* **New `CancellationService`** - Tracks active tool executions with in-memory registry and Redis pubsub for multi-worker coordination
+  - `register_run()`, `unregister_run()`, `cancel_run()`, `get_status()`, `is_registered()` methods
+  - Automatic lifecycle management with `initialize()` and `shutdown()` hooks
+  - Redis pubsub on `cancellation:cancel` channel for cluster-wide cancellation propagation
+* **New REST API endpoints** - Gateway-authoritative cancellation control
+  - `POST /cancellation/cancel` - Request cancellation with reason, broadcasts to all sessions
+  - `GET /cancellation/status/{request_id}` - Query run status including cancellation state
+  - RBAC protected with `admin.system_config` permission
+* **Real task interruption** - Actual asyncio task cancellation, not just status marking
+  - Tool executions wrapped in `asyncio.Task` with cancel callbacks
+  - Handles `asyncio.CancelledError` with proper JSON-RPC error responses
+  - Immediate interruption of long-running operations
+* **JSON-RPC integration** - All `tools/call` requests automatically registered for cancellation
+  - Pre-execution cancellation check to avoid starting cancelled tasks
+  - Automatic unregistration on completion or error
+  - Compatible with new authorization context (`user_email`, `token_teams`, `server_id`)
+* **Session broadcasting** - `notifications/cancelled` sent to all connected MCP sessions
+  - Best-effort delivery with per-session error logging
+  - Allows external MCP servers to handle cancellation
+* **Multi-worker support** - Production-ready for distributed deployments
+  - Cancellations propagate across all workers via Redis pubsub
+  - Graceful degradation if Redis unavailable (local-only cancellation)
+* **Comprehensive testing** - 425 lines of test coverage
+  - Unit tests for service methods and error handling
+  - Integration tests for HTTP endpoints with auth
+  - Session broadcast verification
+* **Complete documentation** - API specs and implementation details in `docs/docs/api/cancellation.md`
+* **Backwards compatible** - Existing inbound `notifications/cancelled` handling unchanged
+
 #### **🎛️ Execution Metrics Recording Switch** ([#1804](https://github.com/IBM/mcp-context-forge/issues/1804))
 * **New setting** `DB_METRICS_RECORDING_ENABLED` - Disable execution metrics database writes
   - Controls tool/resource/prompt/server/A2A metrics recording (one DB row per operation)
   - Set `DB_METRICS_RECORDING_ENABLED=false` to disable when using external observability
   - Does NOT affect log aggregation (`METRICS_AGGREGATION_ENABLED`) or Prometheus (`ENABLE_METRICS`)
   - Default: `true` (existing behavior unchanged)
+
+#### **🔐 RFC 8707 OAuth Resource Indicators for JWT Tokens**
+* **OAuth JWT token support** - Enables OAuth providers to return JWT tokens instead of opaque tokens
+  - Adds RFC 8707 `resource` parameter to OAuth authorization, token exchange, and refresh requests
+  - Automatically derives `resource` from the MCP server URL (`gateway.url`), normalized per RFC 8707
+  - Fixes "Invalid Compact JWS" errors when OAuth providers (e.g., BetterAuth) default to opaque tokens
+  - No configuration changes required for most OAuth providers
+  - Note: Providers requiring pre-registered resource identifiers may need explicit `resource` configuration
 
 ### Deprecated
 
@@ -747,7 +788,7 @@ This release focuses on **Advanced OAuth Integration, Plugin Ecosystem, MCP Regi
   - `GET /grpc` - List all gRPC services with team filtering
   - `GET /grpc/{id}` - Get service details
   - `PUT /grpc/{id}` - Update service configuration
-  - `POST /grpc/{id}/toggle` - Enable/disable service
+  - `POST /grpc/{id}/state` - Enable/disable service
   - `POST /grpc/{id}/delete` - Delete service
   - `POST /grpc/{id}/reflect` - Re-trigger service discovery
   - `GET /grpc/{id}/methods` - List discovered methods

@@ -349,7 +349,10 @@ JWT_PRIVATE_KEY_PATH=jwt/private.pem   # Required for asymmetric algorithms (RS*
 JWT_AUDIENCE=mcpgateway-api
 JWT_ISSUER=mcpgateway
 JWT_AUDIENCE_VERIFICATION=true         # Set to false for Dynamic Client Registration
+JWT_ISSUER_VERIFICATION=true           # Set to false if issuer validation is not needed
 REQUIRE_TOKEN_EXPIRATION=true
+EMBED_ENVIRONMENT_IN_TOKENS=false      # Embed env claim in tokens for environment isolation
+VALIDATE_TOKEN_ENVIRONMENT=false       # Reject tokens with mismatched env claim
 
 # Basic Auth (Admin UI)
 BASIC_AUTH_USER=admin
@@ -769,6 +772,7 @@ JWT_SECRET_KEY=your-256-bit-secret-key-here
 JWT_AUDIENCE=mcpgateway-api
 JWT_ISSUER=mcpgateway
 JWT_AUDIENCE_VERIFICATION=true
+JWT_ISSUER_VERIFICATION=true
 ```
 
 ### RSA (Asymmetric) - Enterprise Deployments
@@ -783,6 +787,7 @@ JWT_PRIVATE_KEY_PATH=certs/jwt/private.pem    # Path to RSA private key
 JWT_AUDIENCE=mcpgateway-api
 JWT_ISSUER=mcpgateway
 JWT_AUDIENCE_VERIFICATION=true
+JWT_ISSUER_VERIFICATION=true
 ```
 
 #### Generate RSA Keys
@@ -836,6 +841,7 @@ JWT_ALGORITHM=RS256
 JWT_PUBLIC_KEY_PATH=certs/jwt/public.pem
 JWT_PRIVATE_KEY_PATH=certs/jwt/private.pem
 JWT_AUDIENCE_VERIFICATION=false         # Disable audience validation for DCR
+JWT_ISSUER_VERIFICATION=false           # Disable issuer validation for DCR
 JWT_ISSUER=your-identity-provider
 ```
 
