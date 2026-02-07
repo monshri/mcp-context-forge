@@ -379,7 +379,7 @@ This will start CedarPolicyPlugin on port `8000`.
   ```
 
 2. To test cedar plugin from the UI
-Invoke the `fast-time-git-status` from the UI, with `admin` as role. 
+Invoke the `fast-time-git-status` from the UI, with `admin` as role.
 The request will be allowed by the CedarPolicyPlugin.
 
 If you switch to a another tool which is not in the policy `fast-time-git-show` expect denial by the CedarPolicyPlugin. For more details into policy, `plugins/external/cedar/resources/config.yaml`
