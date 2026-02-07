@@ -40,6 +40,7 @@ from mcpgateway.plugins.framework import (
     ResourcePreFetchPayload,
     ResourcePreFetchResult,
     ResourceHookType,
+    ToolHookType,
     ToolPostInvokePayload,
     ToolPostInvokeResult,
     ToolPreInvokePayload,
@@ -114,6 +115,7 @@ class CedarPolicyPlugin(Plugin):
         self.jwt_info: dict[str, dict[str, str]] = {}
         self._cedar_policy: str | None = None
         self._output_redaction_pattern: str | re.Pattern[str] | None = "all"
+        self._output_redaction_string: str = "[REDACTED]"
 
         # Regexes are compiled once
         self._custom_dsl_pattern = re.compile(r"\[role:([A-Za-z0-9_]+):(resource|prompt|server|agent)/([^\]]+)\]")
@@ -151,10 +153,10 @@ class CedarPolicyPlugin(Plugin):
         self.jwt_info["users"] = user_role_mapping
 
     def _create_dsl_policy_template(self, current_role: str, resource_category: str, current_actions: list, resource_name: str) -> dict[str, Any]:
-        """Sets user role mapping information from jwt tokens
+        """Create a Cedar policy dict from DSL-parsed role/resource/action components.
 
         Args:
-          current_role(dict): role of the user
+          current_role(str): role of the user
           resource_category(str): category of resource
           current_actions(list): a specified list of actions
           resource_name(str): name of the resource
@@ -202,7 +204,7 @@ class CedarPolicyPlugin(Plugin):
         """
         result: AuthzResult = await asyncio.to_thread(is_authorized, request, policy_expr, [])
         if result.decision == Decision.NoDecision:
-            raise PluginError(PluginErrorModel(message=CedarErrorCodes.CEDAR_POLICY_EVALUATION_ERROR.value, plugin_name="CedarPolicyPlugin", details=result._diagnostics.errors))
+            raise PluginError(PluginErrorModel(message=CedarErrorCodes.CEDAR_POLICY_EVALUATION_ERROR.value, plugin_name="CedarPolicyPlugin", details=result.diagnostics.errors))
         return "Allow" if result.decision == Decision.Allow else "Deny"
 
     async def _evaluate_policy_batch(self, batch_requests: dict, policy_expr: str) -> dict:
@@ -265,7 +267,7 @@ class CedarPolicyPlugin(Plugin):
         cedar_policy_text = self._yamlpolicy2text(policies)
         return cedar_policy_text
 
-    def _preprocess_request(self, user: dict = {}, action: str = "", resource: str = "", hook_type: str = "", context: dict = {}, correlation_id: str = "") -> CedarInput:
+    def _preprocess_request(self, user: Any = None, action: str = "", resource: str = "", hook_type: str = "", context: dict | None = None, correlation_id: str = "") -> CedarInput:
         """Function to pre process request into a format that cedar accepts
         Args:
             user(str): name of the user
@@ -276,6 +278,10 @@ class CedarPolicyPlugin(Plugin):
         Returns:
             request(CedarInput): pydantic representation of request as excpected by cedar policy
         """
+        if user is None:
+            user = {}
+        if context is None:
+            context = {}
         user_role = None
         if "tool" in hook_type:
             resource_expr = CedarResourceTemplates.SERVER.format(resource_type=resource)
@@ -338,15 +344,7 @@ class CedarPolicyPlugin(Plugin):
             hook_type(str): the type of hook. For example - tool_pre_invoke, tool_post_invoke etc.
         """
         output_view_checks = []
-        resource = None
-        if "resource" in hook_type:
-            resource = payload
-        if "prompt" in hook_type:
-            resource = payload
-        if "tool" in hook_type:
-            resource = payload
-        if "agent" in hook_type:
-            resource = payload
+        resource = payload
 
         view_full = self.cedar_config.policy_output_keywords.get("view_full", None)
         view_redacted = self.cedar_config.policy_output_keywords.get("view_redacted", None)
@@ -470,7 +468,7 @@ class CedarPolicyPlugin(Plugin):
         Returns:
             The result of the plugin's analysis, including whether the tool can proceed.
         """
-        hook_type = "tool_pre_invoke"
+        hook_type = ToolHookType.TOOL_PRE_INVOKE
         logger.info(f"Processing {hook_type} for '{payload.args}' with {len(payload.args) if payload.args else 0}")
         logger.info(f"Processing context {context}")
 
@@ -515,18 +513,7 @@ class CedarPolicyPlugin(Plugin):
         Returns:
             The result of the plugin's analysis, including whether the tool result should proceed.
         """
-
-        """Plugin hook run after a tool is invoked.
-
-        Args:
-            payload: The tool result payload to be analyzed.
-            context: Contextual information about the hook call.
-
-        Returns:
-            The result of the plugin's analysis, including whether the tool result should proceed.
-        """
-
-        hook_type = "tool_post_invoke"
+        hook_type = ToolHookType.TOOL_POST_INVOKE
         logger.info(f"Processing {hook_type} for '{payload.result}' with {len(payload.result) if payload.result else 0}")
         logger.info(f"Processing context {context}")
 
@@ -576,8 +563,8 @@ class CedarPolicyPlugin(Plugin):
         return ToolPostInvokeResult(continue_processing=True)
 
     async def resource_pre_fetch(self, payload: ResourcePreFetchPayload, context: PluginContext) -> ResourcePreFetchResult:
-        """Cedar Plugin hook that runs after resource pre fetch. This hook takes in payload and context and further evaluates rego
-        policies on the input by sending the request to opa server.
+        """Cedar Plugin hook that runs before resource fetch. This hook takes in payload and context and evaluates cedar
+        policies on the input.
 
         Args:
             payload: The resource pre fetch input or payload to be analyzed.
@@ -632,8 +619,8 @@ class CedarPolicyPlugin(Plugin):
         return ResourcePreFetchResult(continue_processing=True)
 
     async def resource_post_fetch(self, payload: ResourcePostFetchPayload, context: PluginContext) -> ResourcePostFetchResult:
-        """Cedar Plugin hook that runs after resource post fetch. This hook takes in payload and context and further evaluates rego
-        policies on the output by sending the request to opa server.
+        """Cedar Plugin hook that runs after resource post fetch. This hook takes in payload and context and evaluates cedar
+        policies on the output.
 
         Args:
             payload: The resource post fetch output or payload to be analyzed.
